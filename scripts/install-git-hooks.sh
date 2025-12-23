@@ -174,27 +174,48 @@ echo -e "${BLUE}🔍 Running pre-push checks...${NC}\n"
 LOCAL_SHA="$4"
 REMOTE_SHA="$6"
 
-# If remote SHA is all zeros, this is a new branch - compare against origin
-if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
-    # New branch - get the base from the remote tracking branch
-    BRANCH_NAME=$(echo "$3" | sed 's|refs/heads/||')
-    REMOTE_NAME="$1"
-    REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/$BRANCH_NAME" 2>/dev/null || git rev-parse "origin/$BRANCH_NAME" 2>/dev/null || echo "")
-    
-    # If still no remote SHA, compare against the merge base with main/master
-    if [ -z "$REMOTE_SHA" ]; then
-        REMOTE_SHA=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "")
-    fi
-fi
-
-# If we still don't have a remote SHA, skip the hook (first push to empty repo)
-if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
-    echo -e "${YELLOW}⚠️  No remote reference found, skipping checks (first push to new branch)${NC}"
+# Ensure we have a valid local SHA
+if [ -z "$LOCAL_SHA" ] || [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ]; then
+    echo -e "${YELLOW}⚠️  Invalid local SHA, skipping checks${NC}"
     exit 0
 fi
 
+# If remote SHA is all zeros, this is a new branch - find the merge base
+if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    # New branch - try to find the merge base with the default branch
+    BRANCH_NAME=$(echo "$3" | sed 's|refs/heads/||')
+    REMOTE_NAME="$1"
+    
+    # Try to find merge base with origin/main or origin/master
+    REMOTE_SHA=$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null || git merge-base "$LOCAL_SHA" origin/master 2>/dev/null || echo "")
+    
+    # If no merge base found, try to find where this branch diverged
+    # Get the first commit that's not in any remote branch
+    if [ -z "$REMOTE_SHA" ]; then
+        # Find the root commit of this branch (first commit with no parents, or oldest commit)
+        REMOTE_SHA=$(git rev-list --max-parents=0 "$LOCAL_SHA" 2>/dev/null | head -1 || echo "")
+    fi
+    
+    # If we still can't find a base, use the empty tree to review all changes
+    # This will review all files in the branch as new additions
+    if [ -z "$REMOTE_SHA" ]; then
+        # Use the well-known empty tree hash to compare against
+        REMOTE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        echo -e "${BLUE}ℹ️  New branch detected - reviewing all changes in branch${NC}\n"
+    else
+        echo -e "${BLUE}ℹ️  New branch detected - comparing against merge base: $REMOTE_SHA${NC}\n"
+    fi
+fi
+
 # Get list of Swift files changed in the commits being pushed
-PUSHED_SWIFT_FILES=$(git diff --name-only --diff-filter=ACM "$REMOTE_SHA".."$LOCAL_SHA" | grep '\.swift$' || true)
+# Handle empty tree case (new branch with no merge base)
+if [ "$REMOTE_SHA" = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" ]; then
+    # For empty tree, use --root to show all changes from the beginning
+    PUSHED_SWIFT_FILES=$(git diff --root --name-only --diff-filter=ACM "$LOCAL_SHA" | grep '\.swift$' || true)
+else
+    # Normal case: compare two commits
+    PUSHED_SWIFT_FILES=$(git diff --name-only --diff-filter=ACM "$REMOTE_SHA".."$LOCAL_SHA" | grep '\.swift$' || true)
+fi
 
 if [ -z "$PUSHED_SWIFT_FILES" ]; then
     echo -e "${GREEN}✓ No Swift files in commits being pushed${NC}"
@@ -315,7 +336,14 @@ fi
 echo -e "${BLUE}🤖 Running Cursor Agent code review...${NC}"
 
 # Get the diff of commits being pushed
-PUSHED_DIFF=$(git diff "$REMOTE_SHA".."$LOCAL_SHA")
+# Handle empty tree case (new branch with no merge base)
+if [ "$REMOTE_SHA" = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" ]; then
+    # For empty tree, use --root to show all changes from the beginning
+    PUSHED_DIFF=$(git diff --root "$LOCAL_SHA")
+else
+    # Normal case: compare two commits
+    PUSHED_DIFF=$(git diff "$REMOTE_SHA".."$LOCAL_SHA")
+fi
 
 if [ -z "$PUSHED_DIFF" ]; then
     echo -e "${GREEN}✓ No changes to review${NC}"
