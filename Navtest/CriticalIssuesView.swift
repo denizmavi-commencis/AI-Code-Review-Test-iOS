@@ -10,6 +10,7 @@ import SwiftUI
 struct CriticalIssuesView: View {
     @State private var apiKey: String = "sk_live_1234567890abcdef" // CRITICAL: Hardcoded API key
     @State private var password: String = "admin123" // CRITICAL: Hardcoded password
+    @State private var secretToken: String = "secret_token_xyz789" // CRITICAL: Another hardcoded secret
     @State private var userData: UserData?
     @State private var items: [String]? = nil
     @State private var optionalValue: String? = nil
