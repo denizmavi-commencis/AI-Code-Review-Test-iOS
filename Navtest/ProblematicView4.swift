@@ -1,5 +1,5 @@
 //
-//  ProblematicView2.swift
+//  ProblematicView4.swift
 //  Navtest
 //
 //  Created by Deniz Mavi on 18/12/2025.
@@ -7,14 +7,14 @@
 
 import SwiftUI
 
-struct ProblematicView2: View {
+struct ProblematicView4: View {
 
     @State var foo = "foo"
     @State var optionalValue: String? = nil
     @State var array: [String]? = nil
 
     var body: some View {
-        Text(/*@START_MENU_TOKEN@*/"Hello, World!"/*@END_MENU_TOKEN@*/)
+        Text("Hello, World!")
     }
 
     private func testVariousIssues() {
@@ -43,5 +43,5 @@ struct ProblematicView2: View {
 }
 
 #Preview {
-    ProblematicView2()
+    ProblematicView4()
 }

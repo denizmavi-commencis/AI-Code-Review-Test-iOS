@@ -170,40 +170,74 @@ cat >> "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_END'
 echo -e "${BLUE}🔍 Running pre-push checks...${NC}\n"
 
 # Get the range of commits being pushed
-# $4 is local SHA, $6 is remote SHA
+# Pre-push hook arguments:
+# $1 = remote name, $2 = remote URL, $3 = local ref, $4 = local SHA, $5 = remote ref, $6 = remote SHA
+LOCAL_REF="$3"
+REMOTE_REF="$5"
 LOCAL_SHA="$4"
 REMOTE_SHA="$6"
 
+# If LOCAL_SHA is not provided, derive it from the local ref or current HEAD
+if [ -z "$LOCAL_SHA" ] || [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ]; then
+    if [ -n "$LOCAL_REF" ]; then
+        LOCAL_SHA=$(git rev-parse "$LOCAL_REF" 2>/dev/null || echo "")
+    fi
+    
+    # If still no SHA, try to get it from HEAD (current branch)
+    if [ -z "$LOCAL_SHA" ] || [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ]; then
+        LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+    fi
+fi
+
 # Ensure we have a valid local SHA
 if [ -z "$LOCAL_SHA" ] || [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ]; then
-    echo -e "${YELLOW}⚠️  Invalid local SHA, skipping checks${NC}"
+    echo -e "${YELLOW}⚠️  Could not determine local SHA from ref: $LOCAL_REF${NC}"
+    echo -e "${YELLOW}⚠️  Skipping checks${NC}"
     exit 0
 fi
 
-# If remote SHA is all zeros, this is a new branch - find the merge base
-if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
-    # New branch - try to find the merge base with the default branch
-    BRANCH_NAME=$(echo "$3" | sed 's|refs/heads/||')
+# If REMOTE_SHA is not provided or is all zeros, try to get it from the remote tracking branch
+if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
     REMOTE_NAME="$1"
+    BRANCH_NAME=$(echo "$LOCAL_REF" | sed 's|refs/heads/||')
     
-    # Try to find merge base with origin/main or origin/master
-    REMOTE_SHA=$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null || git merge-base "$LOCAL_SHA" origin/master 2>/dev/null || echo "")
+    # If BRANCH_NAME is empty, try to get it from current branch
+    if [ -z "$BRANCH_NAME" ]; then
+        BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    fi
+    
+    # Try to get remote SHA from remote tracking branch (multiple methods)
+    if [ -n "$REMOTE_REF" ] && [ -n "${REMOTE_REF#refs/heads/}" ]; then
+        REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/${REMOTE_REF#refs/heads/}" 2>/dev/null || echo "")
+    fi
+    
+    # If still no remote SHA, try the branch name directly
+    if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+        if [ -n "$BRANCH_NAME" ]; then
+            REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/$BRANCH_NAME" 2>/dev/null || echo "")
+        fi
+    fi
+    
+    # If still no remote SHA, try to find merge base with default branch
+    if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+        # Try to find merge base with origin/main or origin/master
+        REMOTE_SHA=$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null || git merge-base "$LOCAL_SHA" origin/master 2>/dev/null || echo "")
+    fi
     
     # If no merge base found, try to find where this branch diverged
-    # Get the first commit that's not in any remote branch
-    if [ -z "$REMOTE_SHA" ]; then
+    if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
         # Find the root commit of this branch (first commit with no parents, or oldest commit)
         REMOTE_SHA=$(git rev-list --max-parents=0 "$LOCAL_SHA" 2>/dev/null | head -1 || echo "")
     fi
     
     # If we still can't find a base, use the empty tree to review all changes
     # This will review all files in the branch as new additions
-    if [ -z "$REMOTE_SHA" ]; then
+    if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
         # Use the well-known empty tree hash to compare against
         REMOTE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
         echo -e "${BLUE}ℹ️  New branch detected - reviewing all changes in branch${NC}\n"
     else
-        echo -e "${BLUE}ℹ️  New branch detected - comparing against merge base: $REMOTE_SHA${NC}\n"
+        echo -e "${BLUE}ℹ️  Comparing against remote: $REMOTE_SHA${NC}\n"
     fi
 fi
 
