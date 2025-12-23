@@ -1,8 +1,8 @@
-# Pre-Commit Hook Setup Guide
+# Pre-Push Hook Setup Guide
 
 ## Overview
 
-This project now includes an automated pre-commit hook that performs code quality checks before allowing commits. The hook ensures that all code changes meet our quality standards and are free of critical issues for iOS/Swift development.
+This project now includes an automated pre-push hook that performs code quality checks before allowing pushes. The hook ensures that all code changes meet our quality standards and are free of critical issues for iOS/Swift development.
 
 ## 🚀 Quick Setup (For Team Members)
 
@@ -16,7 +16,7 @@ Run the installation script from the project root:
 
 This script will:
 - ✅ Check all prerequisites (Xcode, Swift, Cursor, Python, SwiftLint)
-- ✅ Install the pre-commit hook
+- ✅ Install the pre-push hook
 - ✅ Configure Cursor Agent authentication
 - ✅ Verify the installation
 
@@ -26,25 +26,25 @@ If you prefer to install manually:
 
 ```bash
 # 1. Ensure the hook has the right permissions
-chmod +x .git/hooks/pre-commit
+chmod +x .git/hooks/pre-push
 
 # 2. Authenticate Cursor Agent
 cursor agent login
 
 # 3. Verify installation
-git commit --dry-run
+git push --dry-run
 ```
 
 ## 🔍 What Gets Checked?
 
 ### 1. SwiftLint (if available)
-- Runs linting on all staged Swift files
+- Runs linting on all Swift files being pushed
 - Checks for style violations, warnings, and errors
 - Uses the project's `.swiftlint.yml` configuration (if present)
 
 ### 2. Xcode Build Check
 - Attempts to build the Xcode project
-- Checks for compilation errors in staged Swift files
+- Checks for compilation errors in Swift files being pushed
 - Uses `xcodebuild` to verify the code compiles
 
 ### 3. Cursor AI Code Review
@@ -77,17 +77,20 @@ git commit --dry-run
 # Stage files
 git add .
 
-# Commit (hook runs automatically)
+# Commit
 git commit -m "feat: add user authentication"
+
+# Push (hook runs automatically)
+git push
 ```
 
 ### Output Examples
 
 #### ✅ Success
 ```
-🔍 Running pre-commit checks...
+🔍 Running pre-push checks...
 
-📝 Staged Swift files:
+📝 Swift files in commits being pushed:
 Navtest/ContentView.swift
 Navtest/NavtestApp.swift
 
@@ -103,34 +106,34 @@ Analyzing code changes... (this may take a moment)
   Summary: Changes look good with proper error handling
 
 ╔═══════════════════════════════════════════════════════════╗
-║  ✅ All pre-commit checks passed!                        ║
+║  ✅ All pre-push checks passed!                          ║
 ╚═══════════════════════════════════════════════════════════╝
 ```
 
 #### ❌ Blocked (Linting Issues)
 ```
-🔍 Running pre-commit checks...
+🔍 Running pre-push checks...
 
 🔎 Running SwiftLint...
 ✗ SwiftLint found issues:
   Navtest/ContentView.swift:19:1: warning: Trailing Whitespace Violation
 
-Please fix the analysis issues before committing.
+Please fix the linting issues before pushing.
 ```
 
 #### ❌ Blocked (Build Errors)
 ```
-🔍 Running pre-commit checks...
+🔍 Running pre-push checks...
 
 🔨 Running Xcode build check...
-✗ Build errors found in staged files:
+✗ Build errors found in files being pushed:
   error: Navtest/ContentView.swift:23:15: 
          Cannot find 'Color' in scope
 ```
 
 #### ❌ Blocked (Critical Issues)
 ```
-🔍 Running pre-commit checks...
+🔍 Running pre-push checks...
 
 🔎 Running SwiftLint...
 ✓ SwiftLint passed
@@ -140,7 +143,7 @@ Please fix the analysis issues before committing.
 
 🤖 Running Cursor Agent code review...
 ╔═══════════════════════════════════════════════════════════╗
-║  ❌ CRITICAL ISSUES FOUND - COMMIT BLOCKED               ║
+║  ❌ CRITICAL ISSUES FOUND - PUSH BLOCKED                 ║
 ╚═══════════════════════════════════════════════════════════╝
 
 🚨 Critical Issues Detected:
@@ -152,10 +155,10 @@ Issue #1:
   Issue: Force unwrapping optional that could be nil
   Reason: Could cause app crash if network response is nil
 
-Summary: Found security vulnerability that must be fixed before commit
+Summary: Found security vulnerability that must be fixed before push
 
-Please fix these critical issues before committing.
-To bypass this check (not recommended), use: git commit --no-verify
+Please fix these critical issues before pushing.
+To bypass this check (not recommended), use: git push --no-verify
 ```
 
 ## 🆘 Troubleshooting
@@ -164,10 +167,10 @@ To bypass this check (not recommended), use: git commit --no-verify
 
 ```bash
 # Check if hook exists and is executable
-ls -la .git/hooks/pre-commit
+ls -la .git/hooks/pre-push
 
 # If not executable:
-chmod +x .git/hooks/pre-commit
+chmod +x .git/hooks/pre-push
 ```
 
 ### Cursor Not Authenticated
@@ -214,15 +217,15 @@ xcodebuild -version
 
 ### Hook Taking Too Long
 
-The AI review has a 120-second timeout. If it times out, the hook will automatically skip the AI review and allow the commit to proceed with only SwiftLint and build checks.
+The AI review has a 120-second timeout. If it times out, the hook will automatically skip the AI review and allow the push to proceed with only SwiftLint and build checks.
 
-### Need to Commit Urgently (Emergency Only)
+### Need to Push Urgently (Emergency Only)
 
 ⚠️ **Use with caution - only in emergencies**
 
 ```bash
 # Bypass the hook temporarily
-git commit --no-verify -m "emergency fix"
+git push --no-verify
 
 # Then create a follow-up commit to fix the issues
 ```
@@ -231,7 +234,7 @@ git commit --no-verify -m "emergency fix"
 
 ### Adjust Timeout
 
-Edit `.git/hooks/pre-commit` and change:
+Edit `.git/hooks/pre-push` and change:
 
 ```bash
 # Default is 120 seconds
@@ -240,14 +243,14 @@ timeout 120s "$CURSOR_CLI" agent ...
 
 ### Customize Critical Issue Detection
 
-The AI review prompt can be customized by editing the `REVIEW_PROMPT` variable in `.git/hooks/pre-commit`.
+The AI review prompt can be customized by editing the `REVIEW_PROMPT` variable in `.git/hooks/pre-push`.
 
 ### Disable Specific Checks
 
 To temporarily disable a check (not recommended):
 
 ```bash
-# Edit .git/hooks/pre-commit and comment out the section
+# Edit .git/hooks/pre-push and comment out the section
 # For SwiftLint: comment lines in "Step 1: Run SwiftLint"
 # For Xcode build: comment lines in "Step 1.5: Try to build with xcodebuild"
 # For AI review: comment lines in "Step 2: Run Cursor Agent Code Review"
@@ -255,8 +258,8 @@ To temporarily disable a check (not recommended):
 
 ## 📊 Best Practices
 
-1. **Build your project regularly during development** - Don't wait for the commit hook
-2. **Run SwiftLint locally** - Fix linting issues before committing
+1. **Build your project regularly during development** - Don't wait for the push hook
+2. **Run SwiftLint locally** - Fix linting issues before pushing
 3. **Make small, focused commits** - Faster AI review, easier to fix issues
 4. **Don't bypass the hook regularly** - It's there to catch real issues
 5. **Review AI feedback carefully** - Even if not blocking, it may have good suggestions
@@ -274,7 +277,7 @@ To temporarily disable a check (not recommended):
 
 ### For Code Reviewers
 
-The pre-commit hook doesn't replace code review! It catches critical issues, but reviewers should still check for:
+The pre-push hook doesn't replace code review! It catches critical issues, but reviewers should still check for:
 - Code quality and maintainability
 - Test coverage
 - Documentation
@@ -290,14 +293,14 @@ The pre-commit hook doesn't replace code review! It catches critical issues, but
 
 ## 🐛 Reporting Issues
 
-If you encounter problems with the pre-commit hook:
+If you encounter problems with the pre-push hook:
 
 1. Check the troubleshooting section above
 2. Verify prerequisites: Xcode, Swift, Cursor, Python, SwiftLint (optional)
 3. Review the terminal output for specific errors
 4. Contact the mobile lead with:
    - Error message
-   - What you were trying to commit
+   - What you were trying to push
    - Output of `cursor agent status`
    - Your Cursor version: `cursor --version`
    - Your Xcode version: `xcodebuild -version`

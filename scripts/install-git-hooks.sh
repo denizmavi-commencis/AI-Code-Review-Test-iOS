@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Git Hooks Installation Script
-# This script installs the pre-commit hook for the project
+# This script installs the pre-push hook for the project
 
 set -e
 
@@ -25,7 +25,7 @@ if [ -z "$GIT_ROOT" ]; then
 fi
 
 HOOKS_DIR="$GIT_ROOT/.git/hooks"
-PRE_COMMIT_HOOK="$HOOKS_DIR/pre-commit"
+PRE_PUSH_HOOK="$HOOKS_DIR/pre-push"
 
 # Create hooks directory if it doesn't exist
 if [ ! -d "$HOOKS_DIR" ]; then
@@ -103,10 +103,10 @@ if ! command -v python3 &> /dev/null; then
 fi
 echo -e "${GREEN}✓ Python 3 found: $(python3 --version)${NC}\n"
 
-# Check if pre-commit hook already exists
-if [ -f "$PRE_COMMIT_HOOK" ]; then
-    echo -e "${YELLOW}⚠️  Pre-commit hook already exists${NC}"
-    echo -e "${YELLOW}  Path: $PRE_COMMIT_HOOK${NC}\n"
+# Check if pre-push hook already exists
+if [ -f "$PRE_PUSH_HOOK" ]; then
+    echo -e "${YELLOW}⚠️  Pre-push hook already exists${NC}"
+    echo -e "${YELLOW}  Path: $PRE_PUSH_HOOK${NC}\n"
     
     read -p "Do you want to overwrite it? (y/N): " -n 1 -r
     echo
@@ -116,13 +116,13 @@ if [ -f "$PRE_COMMIT_HOOK" ]; then
     fi
     
     # Backup existing hook
-    BACKUP_FILE="$PRE_COMMIT_HOOK.backup.$(date +%Y%m%d_%H%M%S)"
-    cp "$PRE_COMMIT_HOOK" "$BACKUP_FILE"
+    BACKUP_FILE="$PRE_PUSH_HOOK.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$PRE_PUSH_HOOK" "$BACKUP_FILE"
     echo -e "${GREEN}✓ Existing hook backed up to: $BACKUP_FILE${NC}\n"
 fi
 
-# Create the pre-commit hook
-echo -e "${BLUE}📝 Installing pre-commit hook...${NC}"
+# Create the pre-push hook
+echo -e "${BLUE}📝 Installing pre-push hook...${NC}"
 
 # Use the CURSOR_PATH we found above, or set a default if not found
 if [ -z "$CURSOR_PATH" ]; then
@@ -130,17 +130,25 @@ if [ -z "$CURSOR_PATH" ]; then
     CURSOR_PATH=$(which cursor 2>/dev/null || echo "/Applications/Cursor.app/Contents/Resources/app/bin/cursor")
 fi
 
-cat > "$PRE_COMMIT_HOOK" << 'HOOK_SCRIPT_START'
+cat > "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_START'
 #!/bin/bash
 
-# Pre-commit hook for iOS/Swift project with Cursor AI code review
+# Pre-push hook for iOS/Swift project with Cursor AI code review
 # This hook will:
-# 1. Run Swift build checks on staged files (if Xcode project found)
-# 2. Run SwiftLint on staged Swift files (if available)
+# 1. Run Swift build checks on files being pushed (if Xcode project found)
+# 2. Run SwiftLint on Swift files being pushed (if available)
 # 3. Use Cursor Agent to review code changes
-# 4. Block commit if critical issues are found
+# 4. Block push if critical issues are found
 
 set -e
+
+# Pre-push hook arguments:
+# $1 = Name of the remote to which the push is being done
+# $2 = URL to which the push is being done
+# $3 = Local ref being pushed (e.g., refs/heads/main)
+# $4 = Local SHA1 of the commit being pushed
+# $5 = Remote ref (e.g., refs/heads/main)
+# $6 = Remote SHA1 (will be 0000000000000000000000000000000000000000 if new branch)
 
 # Colors for output
 RED='\033[0;31m'
@@ -153,24 +161,48 @@ NC='\033[0m' # No Color
 HOOK_SCRIPT_START
 
 # Add dynamic paths
-echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_COMMIT_HOOK"
-echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_COMMIT_HOOK"
-echo "SWIFTLINT_AVAILABLE=\"$SWIFTLINT_AVAILABLE\"" >> "$PRE_COMMIT_HOOK"
+echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_PUSH_HOOK"
+echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_PUSH_HOOK"
+echo "SWIFTLINT_AVAILABLE=\"$SWIFTLINT_AVAILABLE\"" >> "$PRE_PUSH_HOOK"
 
-cat >> "$PRE_COMMIT_HOOK" << 'HOOK_SCRIPT_END'
+cat >> "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_END'
 
-echo -e "${BLUE}🔍 Running pre-commit checks...${NC}\n"
+echo -e "${BLUE}🔍 Running pre-push checks...${NC}\n"
 
-# Get list of staged Swift files
-STAGED_SWIFT_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.swift$' || true)
+# Get the range of commits being pushed
+# $4 is local SHA, $6 is remote SHA
+LOCAL_SHA="$4"
+REMOTE_SHA="$6"
 
-if [ -z "$STAGED_SWIFT_FILES" ]; then
-    echo -e "${GREEN}✓ No Swift files staged for commit${NC}"
+# If remote SHA is all zeros, this is a new branch - compare against origin
+if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    # New branch - get the base from the remote tracking branch
+    BRANCH_NAME=$(echo "$3" | sed 's|refs/heads/||')
+    REMOTE_NAME="$1"
+    REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/$BRANCH_NAME" 2>/dev/null || git rev-parse "origin/$BRANCH_NAME" 2>/dev/null || echo "")
+    
+    # If still no remote SHA, compare against the merge base with main/master
+    if [ -z "$REMOTE_SHA" ]; then
+        REMOTE_SHA=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "")
+    fi
+fi
+
+# If we still don't have a remote SHA, skip the hook (first push to empty repo)
+if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    echo -e "${YELLOW}⚠️  No remote reference found, skipping checks (first push to new branch)${NC}"
     exit 0
 fi
 
-echo -e "${BLUE}📝 Staged Swift files:${NC}"
-echo "$STAGED_SWIFT_FILES"
+# Get list of Swift files changed in the commits being pushed
+PUSHED_SWIFT_FILES=$(git diff --name-only --diff-filter=ACM "$REMOTE_SHA".."$LOCAL_SHA" | grep '\.swift$' || true)
+
+if [ -z "$PUSHED_SWIFT_FILES" ]; then
+    echo -e "${GREEN}✓ No Swift files in commits being pushed${NC}"
+    exit 0
+fi
+
+echo -e "${BLUE}📝 Swift files in commits being pushed:${NC}"
+echo "$PUSHED_SWIFT_FILES"
 echo ""
 
 cd "$PROJECT_ROOT"
@@ -181,12 +213,12 @@ cd "$PROJECT_ROOT"
 if [ "$SWIFTLINT_AVAILABLE" = "true" ]; then
     echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
     
-    # Run swiftlint on staged Swift files only
+    # Run swiftlint on Swift files being pushed
     SWIFTLINT_OUTPUT=""
     SWIFTLINT_EXIT_CODE=0
     HAS_LINT_ERRORS=false
     
-    for file in $STAGED_SWIFT_FILES; do
+    for file in $PUSHED_SWIFT_FILES; do
         if [ -f "$PROJECT_ROOT/$file" ]; then
             FILE_OUTPUT=$(swiftlint lint --path "$PROJECT_ROOT/$file" 2>&1 || true)
             FILE_EXIT_CODE=$?
@@ -202,7 +234,7 @@ if [ "$SWIFTLINT_AVAILABLE" = "true" ]; then
         echo -e "${RED}✗ SwiftLint found issues:${NC}"
         echo -e "$SWIFTLINT_OUTPUT"
         echo ""
-        echo -e "${RED}Please fix the linting issues before committing.${NC}"
+        echo -e "${RED}Please fix the linting issues before pushing.${NC}"
         exit 1
     fi
     
@@ -245,9 +277,9 @@ if [ -n "$XCODE_PROJECT" ]; then
     BUILD_EXIT_CODE=$?
     
     if [ $BUILD_EXIT_CODE -ne 0 ]; then
-        # Check if the error is related to staged files
+        # Check if the error is related to files being pushed
         HAS_BUILD_ERRORS=false
-        for file in $STAGED_SWIFT_FILES; do
+        for file in $PUSHED_SWIFT_FILES; do
             # Get just the filename for matching
             FILENAME=$(basename "$file")
             if echo "$BUILD_OUTPUT" | grep -q "$file\|$FILENAME"; then
@@ -257,18 +289,18 @@ if [ -n "$XCODE_PROJECT" ]; then
         done
         
         if [ "$HAS_BUILD_ERRORS" = true ]; then
-            echo -e "${RED}✗ Build errors found in staged files:${NC}"
+            echo -e "${RED}✗ Build errors found in files being pushed:${NC}"
             # Show relevant error lines
-            for file in $STAGED_SWIFT_FILES; do
+            for file in $PUSHED_SWIFT_FILES; do
                 FILENAME=$(basename "$file")
                 echo "$BUILD_OUTPUT" | grep -A 3 -B 3 "$file\|$FILENAME" || true
             done
             echo ""
-            echo -e "${RED}Please fix the build errors before committing.${NC}"
+            echo -e "${RED}Please fix the build errors before pushing.${NC}"
             exit 1
         else
-            echo -e "${YELLOW}⚠️  Build check found issues, but not in staged files${NC}"
-            echo -e "${YELLOW}⚠️  Continuing with commit...${NC}\n"
+            echo -e "${YELLOW}⚠️  Build check found issues, but not in files being pushed${NC}"
+            echo -e "${YELLOW}⚠️  Continuing with push...${NC}\n"
         fi
     else
         echo -e "${GREEN}✓ Xcode build check passed${NC}\n"
@@ -282,17 +314,17 @@ fi
 # ============================================
 echo -e "${BLUE}🤖 Running Cursor Agent code review...${NC}"
 
-# Get the diff of staged changes
-STAGED_DIFF=$(git diff --cached)
+# Get the diff of commits being pushed
+PUSHED_DIFF=$(git diff "$REMOTE_SHA".."$LOCAL_SHA")
 
-if [ -z "$STAGED_DIFF" ]; then
+if [ -z "$PUSHED_DIFF" ]; then
     echo -e "${GREEN}✓ No changes to review${NC}"
     exit 0
 fi
 
 # Create a temporary file with the diff
 TEMP_DIFF_FILE=$(mktemp)
-echo "$STAGED_DIFF" > "$TEMP_DIFF_FILE"
+echo "$PUSHED_DIFF" > "$TEMP_DIFF_FILE"
 
 # Prepare the prompt for Cursor Agent
 REVIEW_PROMPT="You are an EXTREMELY strict senior code reviewer for an iOS/Swift project. Your job is to catch EVERY issue that could cause problems. Be very thorough and strict.
@@ -348,10 +380,10 @@ Respond ONLY in the following JSON format:
 
 Set has_critical_issues to true if you find ANY critical or high severity issues. Remember: ANY force unwrapping (!) is CRITICAL.
 
-Here are the staged changes to review:
+Here are the changes being pushed to review:
 
 \`\`\`diff
-$STAGED_DIFF
+$PUSHED_DIFF
 \`\`\`
 
 Respond ONLY with the JSON format above, no additional text."
@@ -656,8 +688,8 @@ for i, issue in enumerate(data.get('critical_issues', []), 1):
 print(f\"Summary: {data.get('summary', 'Issues found in your changes')}\")"
         
         echo ""
-        echo -e "${RED}Please fix these issues before committing.${NC}"
-        echo -e "${YELLOW}To bypass this check (not recommended), use: git commit --no-verify${NC}"
+        echo -e "${RED}Please fix these issues before pushing.${NC}"
+        echo -e "${YELLOW}To bypass this check (not recommended), use: git push --no-verify${NC}"
         
         rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
         exit 1
@@ -715,17 +747,17 @@ rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
 # All checks passed
 # ============================================
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅ All pre-commit checks passed!                        ║${NC}"
+echo -e "${GREEN}║  ✅ All pre-push checks passed!                           ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
 exit 0
 HOOK_SCRIPT_END
 
 # Make the hook executable
-chmod +x "$PRE_COMMIT_HOOK"
+chmod +x "$PRE_PUSH_HOOK"
 
-echo -e "${GREEN}✓ Pre-commit hook installed successfully${NC}"
-echo -e "${GREEN}  Location: $PRE_COMMIT_HOOK${NC}\n"
+echo -e "${GREEN}✓ Pre-push hook installed successfully${NC}"
+echo -e "${GREEN}  Location: $PRE_PUSH_HOOK${NC}\n"
 
 # Setup Cursor Agent if available
 if [ "$CURSOR_AVAILABLE" = true ] && [ -n "$CURSOR_PATH" ]; then
@@ -751,17 +783,17 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║                    Installation Complete!                ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
-echo -e "${GREEN}The pre-commit hook is now active and will run on every commit.${NC}\n"
+echo -e "${GREEN}The pre-push hook is now active and will run on every push.${NC}\n"
 
 echo -e "${BLUE}What the hook does:${NC}"
-echo -e "  1. ✓ Runs SwiftLint on staged Swift files (if available)"
+echo -e "  1. ✓ Runs SwiftLint on Swift files being pushed (if available)"
 echo -e "  2. ✓ Runs Xcode build check (if Xcode project found)"
 echo -e "  3. ✓ Uses Cursor AI to review code changes for critical issues"
-echo -e "  4. ✓ Blocks commits if critical problems are found\n"
+echo -e "  4. ✓ Blocks push if critical problems are found\n"
 
 echo -e "${BLUE}Usage:${NC}"
-echo -e "  • Normal commit: ${GREEN}git commit -m \"message\"${NC}"
-echo -e "  • Bypass hook (emergency): ${YELLOW}git commit --no-verify -m \"message\"${NC}\n"
+echo -e "  • Normal push: ${GREEN}git push${NC}"
+echo -e "  • Bypass hook (emergency): ${YELLOW}git push --no-verify${NC}\n"
 
 echo -e "${BLUE}For more information:${NC}"
 echo -e "  See: .git/hooks/README.md\n"

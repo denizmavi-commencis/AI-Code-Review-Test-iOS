@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Test script for pre-commit hook
-# This script tests the pre-commit hook without actually committing
+# Test script for pre-push hook
+# This script tests the pre-push hook without actually pushing
 
 set -e
 
@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║          Pre-Commit Hook Test Script                     ║${NC}"
+echo -e "${BLUE}║          Pre-Push Hook Test Script                        ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
 # Get the git root directory
@@ -24,72 +24,89 @@ if [ -z "$GIT_ROOT" ]; then
     exit 1
 fi
 
-PRE_COMMIT_HOOK="$GIT_ROOT/.git/hooks/pre-commit"
+PRE_PUSH_HOOK="$GIT_ROOT/.git/hooks/pre-push"
 
-# Check if pre-commit hook exists
-if [ ! -f "$PRE_COMMIT_HOOK" ]; then
-    echo -e "${RED}✗ Pre-commit hook not found${NC}"
-    echo -e "${YELLOW}  Expected location: $PRE_COMMIT_HOOK${NC}"
+# Check if pre-push hook exists
+if [ ! -f "$PRE_PUSH_HOOK" ]; then
+    echo -e "${RED}✗ Pre-push hook not found${NC}"
+    echo -e "${YELLOW}  Expected location: $PRE_PUSH_HOOK${NC}"
     echo -e "${YELLOW}  Run: ./scripts/install-git-hooks.sh${NC}"
     exit 1
 fi
 
 # Check if hook is executable
-if [ ! -x "$PRE_COMMIT_HOOK" ]; then
-    echo -e "${RED}✗ Pre-commit hook is not executable${NC}"
-    echo -e "${YELLOW}  Run: chmod +x $PRE_COMMIT_HOOK${NC}"
+if [ ! -x "$PRE_PUSH_HOOK" ]; then
+    echo -e "${RED}✗ Pre-push hook is not executable${NC}"
+    echo -e "${YELLOW}  Run: chmod +x $PRE_PUSH_HOOK${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Pre-commit hook found and is executable${NC}\n"
+echo -e "${GREEN}✓ Pre-push hook found and is executable${NC}\n"
 
-# Check for staged files
-STAGED_FILES=$(git diff --cached --name-only)
+# Get current branch and remote info
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+REMOTE_NAME=$(git config branch."$CURRENT_BRANCH".remote || echo "origin")
+REMOTE_URL=$(git config remote."$REMOTE_NAME".url || echo "")
+LOCAL_REF="refs/heads/$CURRENT_BRANCH"
+LOCAL_SHA=$(git rev-parse HEAD)
 
-if [ -z "$STAGED_FILES" ]; then
-    echo -e "${YELLOW}⚠️  No files are currently staged${NC}"
-    echo -e "${BLUE}Test options:${NC}"
-    echo -e "  1. Stage some files: ${GREEN}git add <files>${NC}"
-    echo -e "  2. Test with current changes: ${GREEN}git add -A && $0${NC}"
-    echo -e "  3. Create a test commit: ${GREEN}git commit --dry-run${NC}\n"
-    
-    read -p "Do you want to stage all current changes for testing? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        git add -A
-        echo -e "${GREEN}✓ All changes staged${NC}\n"
-    else
-        echo -e "${BLUE}Exiting without changes${NC}"
-        exit 0
-    fi
+# Try to get remote SHA
+REMOTE_REF="refs/heads/$CURRENT_BRANCH"
+REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/$CURRENT_BRANCH" 2>/dev/null || echo "0000000000000000000000000000000000000000")
+
+# If no remote SHA, use merge base with main/master
+if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    REMOTE_SHA=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "0000000000000000000000000000000000000000")
 fi
 
-# Show staged files
-echo -e "${BLUE}📝 Staged files:${NC}"
-git diff --cached --name-only
-echo ""
+echo -e "${BLUE}📋 Test Configuration:${NC}"
+echo -e "  Branch: ${GREEN}$CURRENT_BRANCH${NC}"
+echo -e "  Remote: ${GREEN}$REMOTE_NAME${NC}"
+echo -e "  Local SHA: ${GREEN}$LOCAL_SHA${NC}"
+echo -e "  Remote SHA: ${GREEN}$REMOTE_SHA${NC}\n"
 
-# Run the pre-commit hook
-echo -e "${BLUE}🧪 Running pre-commit hook...${NC}"
+# Get files that would be pushed
+if [ "$REMOTE_SHA" != "0000000000000000000000000000000000000000" ]; then
+    PUSHED_FILES=$(git diff --name-only "$REMOTE_SHA".."$LOCAL_SHA" || true)
+    if [ -z "$PUSHED_FILES" ]; then
+        echo -e "${YELLOW}⚠️  No changes to push (local and remote are in sync)${NC}\n"
+        echo -e "${BLUE}Test options:${NC}"
+        echo -e "  1. Make some changes and commit them"
+        echo -e "  2. The hook will skip checks if there are no changes\n"
+        exit 0
+    fi
+    
+    echo -e "${BLUE}📝 Files that would be pushed:${NC}"
+    echo "$PUSHED_FILES"
+    echo ""
+else
+    echo -e "${YELLOW}⚠️  No remote reference found (first push to new branch)${NC}"
+    echo -e "${YELLOW}  The hook will skip checks for first push${NC}\n"
+    exit 0
+fi
+
+# Run the pre-push hook with simulated arguments
+echo -e "${BLUE}🧪 Running pre-push hook...${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
 
-if "$PRE_COMMIT_HOOK"; then
+# Pre-push hook arguments: remote_name remote_url local_ref local_sha remote_ref remote_sha
+if "$PRE_PUSH_HOOK" "$REMOTE_NAME" "$REMOTE_URL" "$LOCAL_REF" "$LOCAL_SHA" "$REMOTE_REF" "$REMOTE_SHA"; then
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║           ✅ TEST PASSED - Hook Executed Successfully     ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}\n"
-    echo -e "${GREEN}The pre-commit hook would allow this commit.${NC}\n"
+    echo -e "${GREEN}The pre-push hook would allow this push.${NC}\n"
     exit 0
 else
     EXIT_CODE=$?
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║           ❌ TEST FAILED - Hook Would Block Commit        ║${NC}"
+    echo -e "${RED}║           ❌ TEST FAILED - Hook Would Block Push          ║${NC}"
     echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}\n"
-    echo -e "${RED}The pre-commit hook would block this commit.${NC}"
+    echo -e "${RED}The pre-push hook would block this push.${NC}"
     echo -e "${RED}Exit code: $EXIT_CODE${NC}\n"
-    echo -e "${YELLOW}Fix the issues above before committing.${NC}"
+    echo -e "${YELLOW}Fix the issues above before pushing.${NC}"
     exit $EXIT_CODE
 fi
