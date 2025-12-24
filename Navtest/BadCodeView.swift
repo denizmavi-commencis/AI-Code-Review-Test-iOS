@@ -125,3 +125,5 @@ struct User {
 // Final JSON test
 // Success test
 // Final working test
+// Test pre-commit hook
+// Another test

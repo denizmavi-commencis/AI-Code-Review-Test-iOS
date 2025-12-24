@@ -26,6 +26,7 @@ fi
 
 HOOKS_DIR="$GIT_ROOT/.git/hooks"
 PRE_PUSH_HOOK="$HOOKS_DIR/pre-push"
+PRE_COMMIT_HOOK="$HOOKS_DIR/pre-commit"
 
 # Create hooks directory if it doesn't exist
 if [ ! -d "$HOOKS_DIR" ]; then
@@ -55,14 +56,24 @@ if ! command -v swift &> /dev/null; then
 fi
 echo -e "${GREEN}✓ Swift found: $(swift --version | head -n 1)${NC}"
 
-# Check SwiftLint (optional)
-if ! command -v swiftlint &> /dev/null; then
+# Check SwiftLint (optional) - try multiple locations
+SWIFTLINT_AVAILABLE=false
+SWIFTLINT_PATH=""
+if command -v swiftlint &> /dev/null; then
+    SWIFTLINT_PATH=$(which swiftlint)
+    SWIFTLINT_AVAILABLE=true
+    echo -e "${GREEN}✓ SwiftLint found in PATH: $SWIFTLINT_PATH${NC}"
+elif [ -f "/usr/local/bin/swiftlint" ]; then
+    SWIFTLINT_PATH="/usr/local/bin/swiftlint"
+    SWIFTLINT_AVAILABLE=true
+    echo -e "${GREEN}✓ SwiftLint found: $SWIFTLINT_PATH${NC}"
+elif [ -f "/opt/homebrew/bin/swiftlint" ]; then
+    SWIFTLINT_PATH="/opt/homebrew/bin/swiftlint"
+    SWIFTLINT_AVAILABLE=true
+    echo -e "${GREEN}✓ SwiftLint found: $SWIFTLINT_PATH${NC}"
+else
     echo -e "${YELLOW}⚠️  SwiftLint not found (optional)${NC}"
     echo -e "${YELLOW}  SwiftLint checks will be skipped. Install with: brew install swiftlint${NC}"
-    SWIFTLINT_AVAILABLE=false
-else
-    echo -e "${GREEN}✓ SwiftLint found${NC}"
-    SWIFTLINT_AVAILABLE=true
 fi
 
 # Check Cursor CLI - try multiple locations
@@ -563,121 +574,153 @@ if [ -s "$CURSOR_OUTPUT_FILE" ]; then
     
     # Extract JSON from the response
     # The response is wrapped in a result object, and the actual JSON is in a code block
-    JSON_RESULT=$(echo "$REVIEW_RESULT" | python3 << 'PYTHON_EOF'
+    # Pass file path via environment variable
+    JSON_RESULT=$(CURSOR_OUTPUT_FILE="$CURSOR_OUTPUT_FILE" python3 << 'PYTHON_EOF'
 import sys, json
 import re
+import os
+
+def extract_json_with_string_tracking(text, start_idx):
+    """Extract JSON object starting at start_idx, properly tracking strings"""
+    if start_idx < 0 or start_idx >= len(text):
+        return None
+    
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    
+    for i in range(start_idx, len(text)):
+        char = text[i]
+        
+        # Handle escape sequences
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\':
+            escape_next = True
+            continue
+        
+        # Track string boundaries
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        # Only count braces when NOT inside a string
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    # Found the matching closing brace
+                    json_str = text[start_idx:i+1]
+                    try:
+                        parsed = json.loads(json_str)
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
+                    return None
+    
+    return None
+
+def extract_from_code_block(text):
+    """Extract JSON from a code block like ```json ... ```"""
+    backtick = chr(96)
+    code_marker = backtick + backtick + backtick + 'json'
+    code_start = text.find(code_marker)
+    
+    if code_start >= 0:
+        # Find the start of JSON (first { after ```json, skipping whitespace)
+        json_start = code_start + len(code_marker)
+        # Skip whitespace and newlines
+        while json_start < len(text) and text[json_start] in [' ', '\n', '\r', '\t']:
+            json_start += 1
+        
+        if json_start < len(text) and text[json_start] == '{':
+            # Find the closing ``` (but we need the complete JSON first)
+            # Use string tracking to find the matching }
+            parsed = extract_json_with_string_tracking(text, json_start)
+            if parsed:
+                return parsed
+            
+            # Fallback: find closing ``` and try to parse what's between
+            code_end = text.find(backtick + backtick + backtick, json_start)
+            if code_end > json_start:
+                json_candidate = text[json_start:code_end].strip()
+                # Remove trailing whitespace/newlines
+                json_candidate = json_candidate.rstrip()
+                try:
+                    parsed = json.loads(json_candidate)
+                    return parsed
+                except:
+                    pass
+    
+    return None
 
 try:
-    # Parse the outer JSON response
-    data = json.load(sys.stdin)
+    # Read from the file in environment variable, or stdin
+    cursor_file = os.environ.get('CURSOR_OUTPUT_FILE')
+    if cursor_file and os.path.exists(cursor_file):
+        with open(cursor_file, 'r', encoding='utf-8') as f:
+            input_data = f.read()
+    else:
+        input_data = sys.stdin.read()
+    
+    data = json.loads(input_data)
     
     # Get the result field which contains the text response
     if 'result' in data and isinstance(data['result'], str):
         result_str = data['result']
         
         # Look for JSON in code blocks - match ```json ... ```
-        # Use brace counting instead of regex to handle nested objects
-        backtick = chr(96)
-        code_start = result_str.find(backtick + backtick + backtick + 'json')
-        if code_start >= 0:
-            # Find where the JSON object starts (after ```json and whitespace)
-            json_start = result_str.find('{', code_start)
-            if json_start >= 0:
-                # Use brace counting to find the matching closing brace
-                brace_count = 0
-                json_end = -1
-                for i in range(json_start, len(result_str)):
-                    char = result_str[i]
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-                
-                if json_end > json_start:
-                    json_str = result_str[json_start:json_end]
-                    # Handle escaped characters (the string may have literal \n)
-                    json_str = json_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                    try:
-                        parsed = json.loads(json_str)
-                        print(json.dumps(parsed))
-                    except Exception as e:
-                        # Try without the replacements (maybe it's already unescaped)
-                        try:
-                            parsed = json.loads(result_str[json_start:json_end])
-                            print(json.dumps(parsed))
-                        except:
-                            # Last resort: return what we found
-                            print(result_str[json_start:json_end])
-            else:
-                print('{}')
-        else:
-            # No code block found, try to find JSON object directly
-            start_idx = result_str.find('{"has_critical_issues"')
-            if start_idx >= 0:
-                brace_count = 0
-                for i in range(start_idx, len(result_str)):
-                    if result_str[i] == '{':
-                        brace_count += 1
-                    elif result_str[i] == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            try:
-                                extracted = result_str[start_idx:i+1]
-                                parsed = json.loads(extracted)
-                                print(json.dumps(parsed))
-                            except:
-                                print(extracted)
-                            break
-            else:
-                print('{}')
+        parsed = extract_from_code_block(result_str)
+        if parsed:
+            print(json.dumps(parsed))
+            sys.exit(0)
+        
+        # No code block found, try to find JSON object directly
+        start_idx = result_str.find('{"has_critical_issues"')
+        if start_idx >= 0:
+            parsed = extract_json_with_string_tracking(result_str, start_idx)
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        # Try finding any JSON object that contains has_critical_issues
+        # Use regex to find the start
+        match = re.search(r'\{[^{]*"has_critical_issues"', result_str)
+        if match:
+            parsed = extract_json_with_string_tracking(result_str, match.start())
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        print('{}')
     elif 'has_critical_issues' in data:
         print(json.dumps(data))
     else:
         print('{}')
 except Exception as e:
     # Fallback: try to extract from raw text
-    text = sys.stdin.read()
-    backtick = chr(96)
-    code_start = text.find(backtick + backtick + backtick + 'json')
-    if code_start >= 0:
-        json_start = text.find('{', code_start)
-        if json_start >= 0:
-            brace_count = 0
-            for i in range(json_start, len(text)):
-                if text[i] == '{':
-                    brace_count += 1
-                elif text[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        try:
-                            extracted = text[json_start:i+1]
-                            parsed = json.loads(extracted)
-                            print(json.dumps(parsed))
-                        except:
-                            print(extracted)
-                        break
-    else:
-        json_start = text.find('{"has_critical_issues"')
-        if json_start >= 0:
-            brace_count = 0
-            for i in range(json_start, len(text)):
-                if text[i] == '{':
-                    brace_count += 1
-                elif text[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        try:
-                            extracted = text[json_start:i+1]
-                            parsed = json.loads(extracted)
-                            print(json.dumps(parsed))
-                        except:
-                            print(extracted)
-                        break
-        else:
-            print('{}')
+    try:
+        text = sys.stdin.read()
+        start_idx = text.find('{"has_critical_issues"')
+        if start_idx >= 0:
+            parsed = extract_json_with_string_tracking(text, start_idx)
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        # Try code block
+        parsed = extract_from_code_block(text)
+        if parsed:
+            print(json.dumps(parsed))
+            sys.exit(0)
+        
+        print('{}')
+    except:
+        print('{}')
 PYTHON_EOF
 )
     
@@ -845,17 +888,414 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║                    Installation Complete!                ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
+# Create the pre-commit hook (warnings only, doesn't block)
+echo -e "${BLUE}📝 Installing pre-commit hook...${NC}"
+
+# Find SwiftLint path
+SWIFTLINT_PATH=""
+if command -v swiftlint &> /dev/null; then
+    SWIFTLINT_PATH=$(which swiftlint)
+elif [ -f "/usr/local/bin/swiftlint" ]; then
+    SWIFTLINT_PATH="/usr/local/bin/swiftlint"
+elif [ -f "/opt/homebrew/bin/swiftlint" ]; then
+    SWIFTLINT_PATH="/opt/homebrew/bin/swiftlint"
+fi
+
+cat > "$PRE_COMMIT_HOOK" << 'PRE_COMMIT_START'
+#!/bin/bash
+
+# Pre-commit hook for iOS/Swift project
+# This hook runs SwiftLint on staged files and shows warnings
+# It does NOT block commits - only provides feedback
+
+set +e  # Don't exit on errors - we want to warn, not block
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+PRE_COMMIT_START
+
+echo "SWIFTLINT_PATH=\"$SWIFTLINT_PATH\"" >> "$PRE_COMMIT_HOOK"
+echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_COMMIT_HOOK"
+echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_COMMIT_HOOK"
+
+cat >> "$PRE_COMMIT_HOOK" << 'PRE_COMMIT_END'
+
+echo -e "${BLUE}🔍 Running pre-commit checks (warnings only)...${NC}\n"
+
+# Get list of staged Swift files
+STAGED_SWIFT_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.swift$' || true)
+
+if [ -z "$STAGED_SWIFT_FILES" ]; then
+    echo -e "${GREEN}✓ No Swift files staged for commit${NC}"
+    exit 0
+fi
+
+echo -e "${BLUE}📝 Staged Swift files:${NC}"
+echo "$STAGED_SWIFT_FILES"
+echo ""
+
+cd "$PROJECT_ROOT"
+
+# ============================================
+# Step 1: Run SwiftLint (if available)
+# ============================================
+if [ -n "$SWIFTLINT_PATH" ] && [ -f "$SWIFTLINT_PATH" ]; then
+    echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
+    
+    HAS_LINT_ISSUES=false
+    SWIFTLINT_OUTPUT=""
+    
+    for file in $STAGED_SWIFT_FILES; do
+        if [ -f "$PROJECT_ROOT/$file" ]; then
+            # Run SwiftLint and capture both output and exit code
+            # SwiftLint takes the path as a positional argument, not --path
+            FILE_OUTPUT=$("$SWIFTLINT_PATH" lint "$PROJECT_ROOT/$file" 2>&1)
+            FILE_EXIT_CODE=$?
+            
+            if [ $FILE_EXIT_CODE -ne 0 ]; then
+                # SwiftLint returns non-zero on errors/warnings
+                HAS_LINT_ISSUES=true
+                SWIFTLINT_OUTPUT="$SWIFTLINT_OUTPUT$FILE_OUTPUT\n"
+            fi
+        fi
+    done
+    
+    if [ "$HAS_LINT_ISSUES" = true ]; then
+        echo -e "${YELLOW}⚠️  SwiftLint found issues (warnings only - commit will proceed):${NC}"
+        echo -e "$SWIFTLINT_OUTPUT"
+        echo ""
+        echo -e "${YELLOW}💡 Tip: Consider fixing these issues before committing${NC}\n"
+    else
+        echo -e "${GREEN}✓ SwiftLint passed${NC}\n"
+    fi
+else
+    echo -e "${YELLOW}⚠️  SwiftLint not found, skipping lint checks${NC}"
+    if [ -z "$SWIFTLINT_PATH" ]; then
+        echo -e "${YELLOW}  Install with: brew install swiftlint${NC}\n"
+    fi
+fi
+
+# ============================================
+# Step 2: Run Cursor Agent Code Review (warnings only)
+# ============================================
+if [ -n "$CURSOR_CLI" ] && [ -f "$CURSOR_CLI" ]; then
+    # Check if Cursor Agent is logged in
+    if "$CURSOR_CLI" agent status >/dev/null 2>&1; then
+        echo -e "${BLUE}🤖 Running Cursor Agent code review (warnings only)...${NC}"
+        
+        # Get the diff of staged changes
+        STAGED_DIFF=$(git diff --cached)
+        
+        if [ -n "$STAGED_DIFF" ]; then
+            # Create a temporary file with the diff
+            TEMP_DIFF_FILE=$(mktemp)
+            echo "$STAGED_DIFF" > "$TEMP_DIFF_FILE"
+            
+            # Prepare the prompt for Cursor Agent (less strict for pre-commit)
+            REVIEW_PROMPT="You are a code reviewer for an iOS/Swift project. Review the staged changes and identify any issues. Be helpful but not overly strict.
+
+Look for:
+- Force unwrapping (!) that could cause crashes
+- Security vulnerabilities (hardcoded secrets, insecure storage)
+- Memory leaks or retain cycles
+- Logic errors that could cause crashes
+- Thread safety violations
+- Performance issues
+
+Respond ONLY in the following JSON format:
+{
+  \"has_critical_issues\": true/false,
+  \"critical_issues\": [
+    {
+      \"severity\": \"critical\" | \"high\" | \"medium\",
+      \"file\": \"path/to/file.swift\",
+      \"line\": 123,
+      \"issue\": \"Description of the issue\",
+      \"reason\": \"Why this should be fixed\",
+      \"suggestion\": \"How to fix it (optional)\"
+    }
+  ],
+  \"summary\": \"Brief summary of findings\"
+}
+
+Here are the staged changes to review:
+
+\`\`\`diff
+$STAGED_DIFF
+\`\`\`
+
+Respond ONLY with the JSON format above, no additional text."
+            
+            # Run Cursor Agent in non-interactive mode
+            CURSOR_OUTPUT_FILE=$(mktemp)
+            CURSOR_ERROR_FILE=$(mktemp)
+            
+            echo -e "${BLUE}Analyzing code changes... (this may take a moment)${NC}"
+            
+            # macOS-compatible timeout: try gtimeout (coreutils), then use bash-based timeout
+            TIMEOUT_SECONDS=60
+            CURSOR_EXIT_CODE=0
+            
+            if command -v gtimeout &> /dev/null; then
+                if gtimeout ${TIMEOUT_SECONDS}s "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE"; then
+                    CURSOR_EXIT_CODE=0
+                else
+                    CURSOR_EXIT_CODE=$?
+                fi
+            else
+                # Bash-based timeout implementation for macOS
+                "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE" &
+                CURSOR_PID=$!
+                
+                TIMEOUT_REACHED=false
+                for i in $(seq 1 $TIMEOUT_SECONDS); do
+                    if ! kill -0 $CURSOR_PID 2>/dev/null; then
+                        wait $CURSOR_PID
+                        CURSOR_EXIT_CODE=$?
+                        break
+                    fi
+                    sleep 1
+                done
+                
+                if kill -0 $CURSOR_PID 2>/dev/null; then
+                    TIMEOUT_REACHED=true
+                    kill $CURSOR_PID 2>/dev/null || true
+                    wait $CURSOR_PID 2>/dev/null || true
+                    CURSOR_EXIT_CODE=124
+                fi
+            fi
+            
+            # Clean up temp diff file
+            rm -f "$TEMP_DIFF_FILE"
+            
+            if [ $CURSOR_EXIT_CODE -eq 124 ]; then
+                echo -e "${YELLOW}⚠️  Cursor Agent review timed out after $TIMEOUT_SECONDS seconds${NC}"
+                echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
+                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+            elif [ $CURSOR_EXIT_CODE -ne 0 ]; then
+                echo -e "${YELLOW}⚠️  Cursor Agent review failed (warnings only - commit will proceed)${NC}\n"
+                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+            elif [ -s "$CURSOR_OUTPUT_FILE" ]; then
+                # Parse the Cursor Agent output using the same extraction logic as pre-push
+                REVIEW_RESULT=$(cat "$CURSOR_OUTPUT_FILE")
+                JSON_RESULT=$(CURSOR_OUTPUT_FILE="$CURSOR_OUTPUT_FILE" python3 << 'PYTHON_EOF'
+import sys, json
+import os
+import re
+
+def extract_json_with_string_tracking(text, start_idx):
+    """Extract JSON object starting at start_idx, properly tracking strings"""
+    if start_idx < 0 or start_idx >= len(text):
+        return None
+    
+    brace_count = 0
+    in_string = False
+    escape_next = False
+    
+    for i in range(start_idx, len(text)):
+        char = text[i]
+        
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\':
+            escape_next = True
+            continue
+        
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        if not in_string:
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    json_str = text[start_idx:i+1]
+                    try:
+                        parsed = json.loads(json_str)
+                        return parsed
+                    except json.JSONDecodeError:
+                        pass
+                    return None
+    
+    return None
+
+def extract_from_code_block(text):
+    """Extract JSON from a code block like ```json ... ```"""
+    backtick = chr(96)
+    code_marker = backtick + backtick + backtick + 'json'
+    code_start = text.find(code_marker)
+    
+    if code_start >= 0:
+        json_start = code_start + len(code_marker)
+        while json_start < len(text) and text[json_start] in [' ', '\n', '\r', '\t']:
+            json_start += 1
+        
+        if json_start < len(text) and text[json_start] == '{':
+            parsed = extract_json_with_string_tracking(text, json_start)
+            if parsed:
+                return parsed
+            
+            code_end = text.find(backtick + backtick + backtick, json_start)
+            if code_end > json_start:
+                json_candidate = text[json_start:code_end].strip().rstrip()
+                try:
+                    parsed = json.loads(json_candidate)
+                    return parsed
+                except:
+                    pass
+    
+    return None
+
+try:
+    cursor_file = os.environ.get('CURSOR_OUTPUT_FILE')
+    if cursor_file and os.path.exists(cursor_file):
+        with open(cursor_file, 'r', encoding='utf-8') as f:
+            input_data = f.read()
+    else:
+        input_data = sys.stdin.read()
+    
+    data = json.loads(input_data)
+    
+    if 'result' in data and isinstance(data['result'], str):
+        result_str = data['result']
+        
+        parsed = extract_from_code_block(result_str)
+        if parsed:
+            print(json.dumps(parsed))
+            sys.exit(0)
+        
+        start_idx = result_str.find('{"has_critical_issues"')
+        if start_idx >= 0:
+            parsed = extract_json_with_string_tracking(result_str, start_idx)
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        match = re.search(r'\{[^{]*"has_critical_issues"', result_str)
+        if match:
+            parsed = extract_json_with_string_tracking(result_str, match.start())
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        print('{}')
+    elif 'has_critical_issues' in data:
+        print(json.dumps(data))
+    else:
+        print('{}')
+except Exception as e:
+    try:
+        text = sys.stdin.read()
+        start_idx = text.find('{"has_critical_issues"')
+        if start_idx >= 0:
+            parsed = extract_json_with_string_tracking(text, start_idx)
+            if parsed:
+                print(json.dumps(parsed))
+                sys.exit(0)
+        
+        parsed = extract_from_code_block(text)
+        if parsed:
+            print(json.dumps(parsed))
+            sys.exit(0)
+        
+        print('{}')
+    except:
+        print('{}')
+PYTHON_EOF
+)
+                
+                # Check if we got valid JSON
+                if echo "$JSON_RESULT" | python3 -m json.tool >/dev/null 2>&1; then
+                    # Extract issues
+                    ISSUE_COUNT=$(echo "$JSON_RESULT" | python3 -c "import sys, json; data = json.load(sys.stdin); issues = data.get('critical_issues', []); print(len(issues) if isinstance(issues, list) else 0)" 2>/dev/null || echo "0")
+                    
+                    if [ "$ISSUE_COUNT" -gt 0 ]; then
+                        echo -e "${YELLOW}⚠️  Cursor Agent found issues (warnings only - commit will proceed):${NC}\n"
+                        echo "$JSON_RESULT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for i, issue in enumerate(data.get('critical_issues', []), 1):
+    severity = issue.get('severity', 'medium').lower()
+    if severity == 'critical':
+        severity_marker = '🔴 CRITICAL'
+    elif severity == 'high':
+        severity_marker = '🟠 HIGH'
+    else:
+        severity_marker = '🟡 MEDIUM'
+    
+    print(f\"Issue #{i} [{severity_marker}]:\")
+    print(f\"  File: {issue.get('file', 'N/A')}\")
+    if 'line' in issue:
+        print(f\"  Line: {issue['line']}\")
+    print(f\"  Issue: {issue.get('issue', 'N/A')}\")
+    if 'suggestion' in issue and issue['suggestion']:
+        print(f\"  Suggestion: {issue['suggestion']}\")
+    print()
+summary = data.get('summary', 'Issues found')
+print(f\"Summary: {summary}\")"
+                        echo ""
+                        echo -e "${YELLOW}💡 Tip: Consider fixing these issues before committing${NC}\n"
+                    else
+                        echo -e "${GREEN}✓ Cursor Agent review passed - no issues found${NC}\n"
+                    fi
+                else
+                    echo -e "${YELLOW}⚠️  Could not parse Cursor Agent response${NC}\n"
+                fi
+                
+                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+            else
+                echo -e "${YELLOW}⚠️  No output from Cursor Agent${NC}\n"
+                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  Cursor Agent is not logged in. Run 'cursor agent login' first.${NC}\n"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  Cursor CLI not found, skipping AI review${NC}\n"
+    fi
+fi
+
+# ============================================
+# All checks complete - always allow commit
+# ============================================
+echo -e "${GREEN}✓ Pre-commit checks complete (warnings only)${NC}\n"
+echo -e "${BLUE}ℹ️  This hook provides warnings but does not block commits${NC}\n"
+
+exit 0
+PRE_COMMIT_END
+
+# Make the hook executable
+chmod +x "$PRE_COMMIT_HOOK"
+
+echo -e "${GREEN}✓ Pre-commit hook installed successfully${NC}"
+echo -e "${GREEN}  Location: $PRE_COMMIT_HOOK${NC}\n"
+
 echo -e "${GREEN}The pre-push hook is now active and will run on every push.${NC}\n"
 
-echo -e "${BLUE}What the hook does:${NC}"
+echo -e "${BLUE}What the hooks do:${NC}"
+echo -e "${GREEN}Pre-commit hook (warnings only):${NC}"
+echo -e "  1. ✓ Runs SwiftLint on staged Swift files (if available)"
+echo -e "  2. ⚠️  Shows warnings but does NOT block commits\n"
+echo -e "${GREEN}Pre-push hook (strict):${NC}"
 echo -e "  1. ✓ Runs SwiftLint on Swift files being pushed (if available)"
 echo -e "  2. ✓ Runs Xcode build check (if Xcode project found)"
 echo -e "  3. ✓ Uses Cursor AI to review code changes for critical issues"
 echo -e "  4. ✓ Blocks push if critical problems are found\n"
 
 echo -e "${BLUE}Usage:${NC}"
-echo -e "  • Normal push: ${GREEN}git push${NC}"
-echo -e "  • Bypass hook (emergency): ${YELLOW}git push --no-verify${NC}\n"
+echo -e "  • Normal commit: ${GREEN}git commit -m \"message\"${NC} (warnings only)"
+echo -e "  • Normal push: ${GREEN}git push${NC} (strict checks)"
+echo -e "  • Bypass hook (emergency): ${YELLOW}git commit --no-verify${NC} or ${YELLOW}git push --no-verify${NC}\n"
 
 echo -e "${BLUE}For more information:${NC}"
 echo -e "  See: .git/hooks/README.md\n"
