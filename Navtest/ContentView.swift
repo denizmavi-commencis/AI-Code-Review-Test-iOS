@@ -12,6 +12,8 @@ struct ContentView: View {
     @State var foo = "foo"
     @State var optionalValue: String? = nil
     @State var array: [String]? = nil
+    @State var secretToken: String = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" // CRITICAL: Hardcoded JWT token
+    @State var dbPassword: String = "admin123" // CRITICAL: Hardcoded database password
 
     var body: some View {
         NavigationStack {
@@ -32,6 +34,12 @@ struct ContentView: View {
                     }
 
                 NavigationLink("Navigate", destination: Color.red)
+                
+                Button("Save Secrets") {
+                    // CRITICAL: Insecure storage
+                    UserDefaults.standard.set(secretToken, forKey: "auth_token")
+                    UserDefaults.standard.set(dbPassword, forKey: "db_password")
+                }
             }
             .padding()
         }
@@ -65,6 +73,11 @@ struct ContentView: View {
 
         let result = optionalValue!.uppercased().lowercased()
         print(result)
+        
+        // CRITICAL: Division by zero
+        let numbers: [Int] = []
+        let average = numbers.reduce(0, +) / numbers.count // Will crash
+        print(average)
     }
 }
 

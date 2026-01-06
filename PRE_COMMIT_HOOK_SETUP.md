@@ -1,8 +1,13 @@
-# Pre-Push Hook Setup Guide
+# Mobile Pre-Push Hook Setup Guide (iOS & Android)
 
 ## Overview
 
-This project now includes an automated pre-push hook that performs code quality checks before allowing pushes. The hook ensures that all code changes meet our quality standards and are free of critical issues for iOS/Swift development.
+This project now includes an automated pre-push hook that performs code quality checks before allowing pushes. The hook ensures that all code changes meet our quality standards and are free of critical issues for iOS/Swift **and** Android/Kotlin-Java development. It automatically detects the platform based on the repository layout.
+
+You can override autodetection with an environment variable:
+- `MOBILE_PLATFORM=ios` only iOS checks
+- `MOBILE_PLATFORM=android` only Android checks
+- `MOBILE_PLATFORM=native` (or `both`/`all`) run both
 
 ## 🚀 Quick Setup (For Team Members)
 
@@ -15,7 +20,7 @@ Run the installation script from the project root:
 ```
 
 This script will:
-- ✅ Check all prerequisites (Xcode, Swift, Cursor, Python, SwiftLint)
+- ✅ Check platform prerequisites (Xcode/Swift/SwiftLint for iOS, Gradle wrapper for Android, Cursor, Python)
 - ✅ Install the pre-push hook
 - ✅ Configure Cursor Agent authentication
 - ✅ Verify the installation
@@ -42,10 +47,10 @@ git push --dry-run
 - Checks for style violations, warnings, and errors
 - Uses the project's `.swiftlint.yml` configuration (if present)
 
-### 2. Xcode Build Check
-- Attempts to build the Xcode project
-- Checks for compilation errors in Swift files being pushed
-- Uses `xcodebuild` to verify the code compiles
+### 2. Android Lint & Unit Tests (if Gradle project found)
+- Detects Android changes and runs `./gradlew lint`
+- Runs `./gradlew test` to catch unit test regressions
+- Skips Android checks if no Gradle wrapper is found
 
 ### 3. Cursor AI Code Review
 - AI-powered review of your code changes
@@ -97,9 +102,6 @@ Navtest/NavtestApp.swift
 🔎 Running SwiftLint...
 ✓ SwiftLint passed
 
-🔨 Running Xcode build check...
-✓ Xcode build check passed
-
 🤖 Running Cursor Agent code review...
 Analyzing code changes... (this may take a moment)
 ✓ Cursor Agent review passed - no critical issues found
@@ -121,25 +123,12 @@ Analyzing code changes... (this may take a moment)
 Please fix the linting issues before pushing.
 ```
 
-#### ❌ Blocked (Build Errors)
-```
-🔍 Running pre-push checks...
-
-🔨 Running Xcode build check...
-✗ Build errors found in files being pushed:
-  error: Navtest/ContentView.swift:23:15: 
-         Cannot find 'Color' in scope
-```
-
 #### ❌ Blocked (Critical Issues)
 ```
 🔍 Running pre-push checks...
 
 🔎 Running SwiftLint...
 ✓ SwiftLint passed
-
-🔨 Running Xcode build check...
-✓ Xcode build check passed
 
 🤖 Running Cursor Agent code review...
 ╔═══════════════════════════════════════════════════════════╗
@@ -205,19 +194,19 @@ swiftlint version
 
 Note: SwiftLint is optional. The hook will work without it, but linting checks will be skipped.
 
-### Xcode Command Line Tools Not Found
+### Gradle Wrapper Not Found (Android)
 
 ```bash
-# Install Xcode Command Line Tools
-xcode-select --install
-
-# Verify installation
-xcodebuild -version
+# Ensure gradlew exists and is executable (from repo root)
+ls -l gradlew
+chmod +x gradlew
 ```
+
+If your Android project lives under `android/`, the hook will look for `android/gradlew` instead.
 
 ### Hook Taking Too Long
 
-The AI review has a 120-second timeout. If it times out, the hook will automatically skip the AI review and allow the push to proceed with only SwiftLint and build checks.
+The AI review has a 120-second timeout. If it times out, the hook will automatically skip the AI review and allow the push to proceed with only SwiftLint checks.
 
 ### Need to Push Urgently (Emergency Only)
 
@@ -252,14 +241,12 @@ To temporarily disable a check (not recommended):
 ```bash
 # Edit .git/hooks/pre-push and comment out the section
 # For SwiftLint: comment lines in "Step 1: Run SwiftLint"
-# For Xcode build: comment lines in "Step 1.5: Try to build with xcodebuild"
 # For AI review: comment lines in "Step 2: Run Cursor Agent Code Review"
 ```
 
 ## 📊 Best Practices
 
-1. **Build your project regularly during development** - Don't wait for the push hook
-2. **Run SwiftLint locally** - Fix linting issues before pushing
+1. **Run SwiftLint locally** - Fix linting issues before pushing
 3. **Make small, focused commits** - Faster AI review, easier to fix issues
 4. **Don't bypass the hook regularly** - It's there to catch real issues
 5. **Review AI feedback carefully** - Even if not blocking, it may have good suggestions
@@ -296,20 +283,18 @@ The pre-push hook doesn't replace code review! It catches critical issues, but r
 If you encounter problems with the pre-push hook:
 
 1. Check the troubleshooting section above
-2. Verify prerequisites: Xcode, Swift, Cursor, Python, SwiftLint (optional)
+2. Verify prerequisites: Swift, Cursor, Python, SwiftLint (optional)
 3. Review the terminal output for specific errors
 4. Contact the mobile lead with:
    - Error message
    - What you were trying to push
    - Output of `cursor agent status`
    - Your Cursor version: `cursor --version`
-   - Your Xcode version: `xcodebuild -version`
 
 ## 📜 Version History
 
 - **v2.0** (Dec 2025) - iOS/Swift adaptation
   - SwiftLint integration
-  - Xcode build check
   - Cursor AI code review
   - Critical issue detection for iOS
   - Team installation script

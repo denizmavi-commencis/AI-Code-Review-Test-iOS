@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     Git Hooks Installation for iOS Project                ║${NC}"
+echo -e "${BLUE}║   Git Hooks Installation for Mobile Projects (iOS/Android) ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
 # Get the git root directory
@@ -30,81 +30,121 @@ PRE_COMMIT_HOOK="$HOOKS_DIR/pre-commit"
 
 # Create hooks directory if it doesn't exist
 if [ ! -d "$HOOKS_DIR" ]; then
-    echo -e "${BLUE}📁 Creating git hooks directory...${NC}"
+echo -e "${BLUE}📁 Creating git hooks directory...${NC}"
     mkdir -p "$HOOKS_DIR"
     echo -e "${GREEN}✓ Git hooks directory created${NC}\n"
 fi
 
 echo -e "${BLUE}📍 Git repository: $GIT_ROOT${NC}\n"
 
+# Defaults (runtime detection happens inside hooks)
+SWIFTLINT_AVAILABLE=false
+SWIFTLINT_PATH=""
+IS_IOS_PROJECT=false
+IS_ANDROID_PROJECT=false
+ANDROID_GRADLEW=""
+ANDROID_WORKDIR=""
+BREW_AVAILABLE=false
+BREW_INSTALL_INSTRUCTIONS=""
+
+if command -v brew &> /dev/null; then
+    BREW_AVAILABLE=true
+    BREW_INSTALL_INSTRUCTIONS="brew install cursor-cli"
+else
+    BREW_INSTALL_INSTRUCTIONS="Install Homebrew (see https://brew.sh) then run: brew install cursor-cli"
+fi
+
 # Check prerequisites
 echo -e "${BLUE}🔍 Checking prerequisites...${NC}\n"
 
-# Check Xcode Command Line Tools
-if ! command -v xcodebuild &> /dev/null; then
-    echo -e "${RED}✗ Xcode Command Line Tools not found${NC}"
-    echo -e "${YELLOW}  Please install Xcode Command Line Tools: xcode-select --install${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Xcode Command Line Tools found${NC}"
-
-# Check Swift
-if ! command -v swift &> /dev/null; then
-    echo -e "${RED}✗ Swift not found${NC}"
-    echo -e "${YELLOW}  Please install Swift/Xcode${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Swift found: $(swift --version | head -n 1)${NC}"
-
-# Check SwiftLint (optional) - try multiple locations
-SWIFTLINT_AVAILABLE=false
-SWIFTLINT_PATH=""
-if command -v swiftlint &> /dev/null; then
-    SWIFTLINT_PATH=$(which swiftlint)
-    SWIFTLINT_AVAILABLE=true
-    echo -e "${GREEN}✓ SwiftLint found in PATH: $SWIFTLINT_PATH${NC}"
-elif [ -f "/usr/local/bin/swiftlint" ]; then
-    SWIFTLINT_PATH="/usr/local/bin/swiftlint"
-    SWIFTLINT_AVAILABLE=true
-    echo -e "${GREEN}✓ SwiftLint found: $SWIFTLINT_PATH${NC}"
-elif [ -f "/opt/homebrew/bin/swiftlint" ]; then
-    SWIFTLINT_PATH="/opt/homebrew/bin/swiftlint"
-    SWIFTLINT_AVAILABLE=true
-    echo -e "${GREEN}✓ SwiftLint found: $SWIFTLINT_PATH${NC}"
-else
-    echo -e "${YELLOW}⚠️  SwiftLint not found (optional)${NC}"
-    echo -e "${YELLOW}  SwiftLint checks will be skipped. Install with: brew install swiftlint${NC}"
-fi
-
-# Check Cursor CLI - try multiple locations
+# Check Cursor CLI - try multiple locations (required)
 CURSOR_PATH=""
+CURSOR_AVAILABLE=false
+CURSOR_AGENT_BIN=""
 if command -v cursor &> /dev/null; then
     CURSOR_PATH=$(which cursor)
-    echo -e "${GREEN}✓ Cursor CLI found in PATH: $CURSOR_PATH${NC}"
     CURSOR_AVAILABLE=true
 elif [ -f "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" ]; then
     CURSOR_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
-    echo -e "${GREEN}✓ Cursor CLI found: $CURSOR_PATH${NC}"
     CURSOR_AVAILABLE=true
 elif [ -f "$HOME/.cursor/bin/cursor" ]; then
     CURSOR_PATH="$HOME/.cursor/bin/cursor"
-    echo -e "${GREEN}✓ Cursor CLI found: $CURSOR_PATH${NC}"
     CURSOR_AVAILABLE=true
 elif [ -f "$HOME/.local/bin/cursor" ]; then
     CURSOR_PATH="$HOME/.local/bin/cursor"
-    echo -e "${GREEN}✓ Cursor CLI found: $CURSOR_PATH${NC}"
     CURSOR_AVAILABLE=true
-else
-    echo -e "${YELLOW}⚠️  Cursor CLI not found${NC}"
-    echo -e "${YELLOW}  AI code review will be skipped if Cursor is not installed${NC}"
+fi
+
+# Require cursor-agent to be runnable from the terminal PATH (no GUI fallbacks)
+if command -v cursor-agent &> /dev/null; then
+    CURSOR_AGENT_BIN=$(which cursor-agent)
+fi
+
+if [ "$CURSOR_AVAILABLE" != true ]; then
+    echo -e "${RED}✗ Error: Cursor Agent CLI not found${NC}"
+    echo -e "${YELLOW}  Install Cursor CLI and ensure it's on your PATH.${NC}"
+    if [ "$BREW_AVAILABLE" = true ]; then
+        echo -e "${YELLOW}  Install via Homebrew: brew install cursor-cli${NC}"
+    else
+        echo -e "${YELLOW}  Homebrew not found. Install Homebrew then run: brew install cursor-cli${NC}"
+    fi
     echo -e "${YELLOW}  Checked locations:${NC}"
     echo -e "${YELLOW}    - PATH (which cursor)${NC}"
     echo -e "${YELLOW}    - /Applications/Cursor.app/Contents/Resources/app/bin/cursor${NC}"
     echo -e "${YELLOW}    - ~/.cursor/bin/cursor${NC}"
     echo -e "${YELLOW}    - ~/.local/bin/cursor${NC}"
-    CURSOR_AVAILABLE=false
-    CURSOR_PATH=""
+    exit 1
 fi
+
+# Ensure Cursor Agent binary is runnable (not just GUI)
+if [ -z "$CURSOR_AGENT_BIN" ] || [ ! -x "$CURSOR_AGENT_BIN" ]; then
+    echo -e "${RED}✗ Error: Cursor Agent binary not available from this terminal${NC}"
+    if [ "$BREW_AVAILABLE" = true ]; then
+        echo -e "${YELLOW}  Install via Homebrew: brew install cursor-cli${NC}"
+    else
+        echo -e "${YELLOW}  Homebrew not found. Install Homebrew then run: brew install cursor-cli${NC}"
+    fi
+    echo -e "${YELLOW}  We could not run 'cursor-agent' from PATH (no GUI fallback used).${NC}"
+    echo -e "${YELLOW}  Detected cursor CLI (may be GUI-only): ${CURSOR_PATH:-<none>}${NC}"
+    exit 1
+fi
+
+# Ensure Cursor has the agent subcommand available
+if ! "$CURSOR_PATH" agent --help >/dev/null 2>&1; then
+    echo -e "${RED}✗ Error: Cursor CLI found but 'cursor agent' command is unavailable${NC}"
+    echo -e "${YELLOW}  Please update Cursor to a version that includes Cursor Agent.${NC}"
+    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Cursor Agent CLI available${NC}"
+
+# Quick reachability/auth check (required)
+CURSOR_STATUS_OUTPUT=$("$CURSOR_PATH" agent status 2>&1) || CURSOR_STATUS_EXIT=$?
+CURSOR_STATUS_EXIT=${CURSOR_STATUS_EXIT:-0}
+if echo "$CURSOR_STATUS_OUTPUT" | grep -Eqi "command not found|No such file|not recognized|unknown command|unknown subcommand|is not a valid command"; then
+    echo -e "${RED}✗ Error: Cursor CLI/Agent command not available${NC}"
+    echo -e "${YELLOW}  Please install or update Cursor so that 'cursor agent' works.${NC}"
+    echo -e "${YELLOW}  Detected CLI path (may be stale): $CURSOR_PATH${NC}"
+    echo -e "${YELLOW}  Status output:${NC}"
+    echo "$CURSOR_STATUS_OUTPUT"
+    exit 1
+elif echo "$CURSOR_STATUS_OUTPUT" | grep -qi "not logged in"; then
+    echo -e "${RED}✗ Error: Cursor Agent not authenticated${NC}"
+    echo -e "${YELLOW}  Run: cursor agent login${NC}"
+    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
+    echo -e "${YELLOW}  Status output:${NC}"
+    echo "$CURSOR_STATUS_OUTPUT"
+    exit 1
+elif [ $CURSOR_STATUS_EXIT -ne 0 ]; then
+    echo -e "${RED}✗ Error: Cursor Agent unreachable${NC}"
+    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
+    echo -e "${YELLOW}  Status output:${NC}"
+    echo "$CURSOR_STATUS_OUTPUT"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Cursor Agent status reachable${NC}\n"
 
 # Check Python
 if ! command -v python3 &> /dev/null; then
@@ -144,10 +184,10 @@ fi
 cat > "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_START'
 #!/bin/bash
 
-# Pre-push hook for iOS/Swift project with Cursor AI code review
+# Pre-push hook for mobile projects (iOS/Android) with Cursor AI code review
 # This hook will:
-# 1. Run Swift build checks on files being pushed (if Xcode project found)
-# 2. Run SwiftLint on Swift files being pushed (if available)
+# 1. Run SwiftLint on Swift files being pushed (if available)
+# 2. Run Android lint and unit tests when Android changes are present
 # 3. Use Cursor Agent to review code changes
 # 4. Block push if critical issues are found
 
@@ -175,10 +215,73 @@ HOOK_SCRIPT_START
 echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_PUSH_HOOK"
 echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_PUSH_HOOK"
 echo "SWIFTLINT_AVAILABLE=\"$SWIFTLINT_AVAILABLE\"" >> "$PRE_PUSH_HOOK"
+echo "IS_IOS_PROJECT=\"$IS_IOS_PROJECT\"" >> "$PRE_PUSH_HOOK"
+echo "IS_ANDROID_PROJECT=\"$IS_ANDROID_PROJECT\"" >> "$PRE_PUSH_HOOK"
+echo "ANDROID_GRADLEW=\"$ANDROID_GRADLEW\"" >> "$PRE_PUSH_HOOK"
+echo "ANDROID_WORKDIR=\"$ANDROID_WORKDIR\"" >> "$PRE_PUSH_HOOK"
 
 cat >> "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_END'
 
 echo -e "${BLUE}🔍 Running pre-push checks...${NC}\n"
+
+# Detect platform at hook runtime (repo could have changed)
+IS_IOS="$IS_IOS_PROJECT"
+IS_ANDROID="$IS_ANDROID_PROJECT"
+
+IOS_PROJECT=$(find "$PROJECT_ROOT" -maxdepth 3 \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) | head -n 1)
+if [ -n "$IOS_PROJECT" ]; then
+    IS_IOS=true
+fi
+
+ANDROID_GRADLEW_PATH="$ANDROID_GRADLEW"
+ANDROID_WORKDIR_PATH="$ANDROID_WORKDIR"
+if [ -z "$ANDROID_GRADLEW_PATH" ]; then
+    if [ -x "$PROJECT_ROOT/gradlew" ]; then
+        ANDROID_GRADLEW_PATH="$PROJECT_ROOT/gradlew"
+        ANDROID_WORKDIR_PATH="$PROJECT_ROOT"
+    elif [ -x "$PROJECT_ROOT/android/gradlew" ]; then
+        ANDROID_GRADLEW_PATH="$PROJECT_ROOT/android/gradlew"
+        ANDROID_WORKDIR_PATH="$PROJECT_ROOT/android"
+    fi
+fi
+if [ -n "$ANDROID_GRADLEW_PATH" ]; then
+    IS_ANDROID=true
+fi
+
+# Optional override via env: MOBILE_PLATFORM=ios|android|native (native => both)
+if [ -n "$MOBILE_PLATFORM" ]; then
+    PLATFORM_LOWER=$(echo "$MOBILE_PLATFORM" | tr '[:upper:]' '[:lower:]')
+    case "$PLATFORM_LOWER" in
+        ios)
+            IS_IOS=true
+            IS_ANDROID=false
+            ;;
+        android)
+            IS_IOS=false
+            IS_ANDROID=true
+            ;;
+        native|both|all)
+            IS_IOS=true
+            IS_ANDROID=true
+            ;;
+        *)
+            # Unknown override, keep autodetected values
+            ;;
+    esac
+fi
+
+echo -e "${BLUE}Platforms:${NC}"
+if [ "$IS_IOS" = true ]; then
+    echo -e "  • ${GREEN}iOS checks enabled${NC}"
+else
+    echo -e "  • ${YELLOW}iOS checks disabled (no project detected)${NC}"
+fi
+if [ "$IS_ANDROID" = true ]; then
+    echo -e "  • ${GREEN}Android checks enabled${NC}"
+else
+    echo -e "  • ${YELLOW}Android checks disabled (no Gradle wrapper found)${NC}"
+fi
+echo ""
 
 # Get the range of commits being pushed
 # Pre-push hook arguments:
@@ -252,131 +355,129 @@ if [ -z "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "0000000000000000000000000000000000
     fi
 fi
 
-# Get list of Swift files changed in the commits being pushed
+# Get list of changed files in the commits being pushed
 # Handle empty tree case (new branch with no merge base)
+PUSHED_FILES=""
 if [ "$REMOTE_SHA" = "4b825dc642cb6eb9a060e54bf8d69288fbee4904" ]; then
     # For empty tree, use --root to show all changes from the beginning
-    PUSHED_SWIFT_FILES=$(git diff --root --name-only --diff-filter=ACM "$LOCAL_SHA" | grep '\.swift$' || true)
+    PUSHED_FILES=$(git diff --root --name-only --diff-filter=ACM "$LOCAL_SHA" || true)
 else
     # Normal case: compare two commits
-    PUSHED_SWIFT_FILES=$(git diff --name-only --diff-filter=ACM "$REMOTE_SHA".."$LOCAL_SHA" | grep '\.swift$' || true)
+    PUSHED_FILES=$(git diff --name-only --diff-filter=ACM "$REMOTE_SHA".."$LOCAL_SHA" || true)
 fi
 
-if [ -z "$PUSHED_SWIFT_FILES" ]; then
-    echo -e "${GREEN}✓ No Swift files in commits being pushed${NC}"
+PUSHED_SWIFT_FILES=$(echo "$PUSHED_FILES" | grep '\.swift$' || true)
+PUSHED_ANDROID_FILES=$(echo "$PUSHED_FILES" | grep -E '\.(kt|kts|java|xml|gradle|gradle\.kts)$' || true)
+
+if [ -z "$PUSHED_SWIFT_FILES" ] && [ -z "$PUSHED_ANDROID_FILES" ]; then
+    echo -e "${GREEN}✓ No iOS or Android files in commits being pushed${NC}"
     exit 0
 fi
 
-echo -e "${BLUE}📝 Swift files in commits being pushed:${NC}"
-echo "$PUSHED_SWIFT_FILES"
-echo ""
+if [ -n "$PUSHED_SWIFT_FILES" ]; then
+    echo -e "${BLUE}📝 Swift files in commits being pushed:${NC}"
+    echo "$PUSHED_SWIFT_FILES"
+    echo ""
+fi
+
+if [ -n "$PUSHED_ANDROID_FILES" ]; then
+    echo -e "${BLUE}📝 Android-related files in commits being pushed:${NC}"
+    echo "$PUSHED_ANDROID_FILES"
+    echo ""
+fi
 
 cd "$PROJECT_ROOT"
 
 # ============================================
 # Step 1: Run SwiftLint (if available)
 # ============================================
-if [ "$SWIFTLINT_AVAILABLE" = "true" ]; then
-    echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
-    
-    # Run swiftlint on Swift files being pushed
-    SWIFTLINT_OUTPUT=""
-    SWIFTLINT_EXIT_CODE=0
-    HAS_LINT_ERRORS=false
-    
-    for file in $PUSHED_SWIFT_FILES; do
-        if [ -f "$PROJECT_ROOT/$file" ]; then
-            FILE_OUTPUT=$(swiftlint lint --path "$PROJECT_ROOT/$file" 2>&1 || true)
-            FILE_EXIT_CODE=$?
-            
-            if [ $FILE_EXIT_CODE -ne 0 ]; then
-                HAS_LINT_ERRORS=true
-                SWIFTLINT_OUTPUT="$SWIFTLINT_OUTPUT$FILE_OUTPUT\n"
-            fi
-        fi
-    done
-    
-    if [ "$HAS_LINT_ERRORS" = true ]; then
-        echo -e "${RED}✗ SwiftLint found issues:${NC}"
-        echo -e "$SWIFTLINT_OUTPUT"
-        echo ""
-        echo -e "${RED}Please fix the linting issues before pushing.${NC}"
-        exit 1
+if [ "$IS_IOS" = true ] && [ -n "$PUSHED_SWIFT_FILES" ]; then
+    # Runtime detection of SwiftLint
+    SWIFTLINT_AVAILABLE=false
+    SWIFTLINT_CMD=""
+    if command -v swiftlint &> /dev/null; then
+        SWIFTLINT_CMD=$(command -v swiftlint)
+        SWIFTLINT_AVAILABLE=true
+    elif [ -f "/usr/local/bin/swiftlint" ]; then
+        SWIFTLINT_CMD="/usr/local/bin/swiftlint"
+        SWIFTLINT_AVAILABLE=true
+    elif [ -f "/opt/homebrew/bin/swiftlint" ]; then
+        SWIFTLINT_CMD="/opt/homebrew/bin/swiftlint"
+        SWIFTLINT_AVAILABLE=true
     fi
-    
-    echo -e "${GREEN}✓ SwiftLint passed${NC}\n"
-else
-    echo -e "${YELLOW}⚠️  SwiftLint not available, skipping lint checks${NC}\n"
-fi
 
-# ============================================
-# Step 1.5: Try to build with xcodebuild (if .xcodeproj found)
-# ============================================
-XCODE_PROJECT=$(find "$PROJECT_ROOT" -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace" | head -1)
-
-if [ -n "$XCODE_PROJECT" ]; then
-    echo -e "${BLUE}🔨 Running Xcode build check...${NC}"
-    
-    # Try to get the first available scheme
-    if [[ "$XCODE_PROJECT" == *.xcworkspace ]]; then
-        SCHEME=$(xcodebuild -workspace "$XCODE_PROJECT" -list 2>/dev/null | grep -A 100 "Schemes:" | grep -v "Schemes:" | head -1 | xargs || echo "")
-    else
-        SCHEME=$(xcodebuild -project "$XCODE_PROJECT" -list 2>/dev/null | grep -A 100 "Schemes:" | grep -v "Schemes:" | head -1 | xargs || echo "")
-    fi
-    
-    # If no scheme found, try using the project name
-    if [ -z "$SCHEME" ]; then
-        if [[ "$XCODE_PROJECT" == *.xcworkspace ]]; then
-            SCHEME=$(basename "$XCODE_PROJECT" .xcworkspace)
-        else
-            SCHEME=$(basename "$XCODE_PROJECT" .xcodeproj)
-        fi
-    fi
-    
-    # Try to build the project (just check compilation, don't create archive)
-    if [[ "$XCODE_PROJECT" == *.xcworkspace ]]; then
-        BUILD_OUTPUT=$(xcodebuild -workspace "$XCODE_PROJECT" -scheme "$SCHEME" -destination 'platform=iOS Simulator,name=iPhone 15' build 2>&1 || true)
-    else
-        BUILD_OUTPUT=$(xcodebuild -project "$XCODE_PROJECT" -scheme "$SCHEME" -destination 'platform=iOS Simulator,name=iPhone 15' build 2>&1 || true)
-    fi
-    
-    BUILD_EXIT_CODE=$?
-    
-    if [ $BUILD_EXIT_CODE -ne 0 ]; then
-        # Check if the error is related to files being pushed
-        HAS_BUILD_ERRORS=false
+    if [ "$SWIFTLINT_AVAILABLE" = "true" ]; then
+        echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
+        
+        # Run swiftlint on Swift files being pushed
+        SWIFTLINT_OUTPUT=""
+        SWIFTLINT_EXIT_CODE=0
+        HAS_LINT_ERRORS=false
+        
         for file in $PUSHED_SWIFT_FILES; do
-            # Get just the filename for matching
-            FILENAME=$(basename "$file")
-            if echo "$BUILD_OUTPUT" | grep -q "$file\|$FILENAME"; then
-                HAS_BUILD_ERRORS=true
-                break
+            if [ -f "$PROJECT_ROOT/$file" ]; then
+                FILE_OUTPUT=$("$SWIFTLINT_CMD" lint --path "$PROJECT_ROOT/$file" 2>&1 || true)
+                FILE_EXIT_CODE=$?
+                
+                if [ $FILE_EXIT_CODE -ne 0 ]; then
+                    HAS_LINT_ERRORS=true
+                    SWIFTLINT_OUTPUT="$SWIFTLINT_OUTPUT$FILE_OUTPUT\n"
+                fi
             fi
         done
         
-        if [ "$HAS_BUILD_ERRORS" = true ]; then
-            echo -e "${RED}✗ Build errors found in files being pushed:${NC}"
-            # Show relevant error lines
-            for file in $PUSHED_SWIFT_FILES; do
-                FILENAME=$(basename "$file")
-                echo "$BUILD_OUTPUT" | grep -A 3 -B 3 "$file\|$FILENAME" || true
-            done
+        if [ "$HAS_LINT_ERRORS" = true ]; then
+            echo -e "${RED}✗ SwiftLint found issues:${NC}"
+            echo -e "$SWIFTLINT_OUTPUT"
             echo ""
-            echo -e "${RED}Please fix the build errors before pushing.${NC}"
+            echo -e "${RED}Please fix the linting issues before pushing.${NC}"
             exit 1
-        else
-            echo -e "${YELLOW}⚠️  Build check found issues, but not in files being pushed${NC}"
-            echo -e "${YELLOW}⚠️  Continuing with push...${NC}\n"
         fi
+        
+        echo -e "${GREEN}✓ SwiftLint passed${NC}\n"
     else
-        echo -e "${GREEN}✓ Xcode build check passed${NC}\n"
+        echo -e "${YELLOW}⚠️  SwiftLint not available, skipping lint checks${NC}\n"
     fi
 else
-    echo -e "${YELLOW}⚠️  No Xcode project found, skipping build check${NC}\n"
+    echo -e "${YELLOW}⚠️  Skipping SwiftLint (no iOS project or no Swift files)${NC}\n"
 fi
 
 # ============================================
-# Step 2: Run Cursor Agent Code Review
+# Step 2: Android lint and tests (if Gradle project found)
+# ============================================
+if [ "$IS_ANDROID" = true ] && [ -n "$PUSHED_ANDROID_FILES" ]; then
+    ANDROID_LINT_FAILED=false
+    ANDROID_TEST_FAILED=false
+
+    echo -e "${BLUE}🤖 Running Android lint...${NC}"
+    set +e
+    (cd "$ANDROID_WORKDIR_PATH" && "$ANDROID_GRADLEW_PATH" lint)
+    ANDROID_LINT_EXIT=$?
+    set -e
+
+    if [ $ANDROID_LINT_EXIT -ne 0 ]; then
+        echo -e "${RED}✗ Android lint failed${NC}"
+        ANDROID_LINT_FAILED=true
+    fi
+    echo -e "${GREEN}✓ Android lint passed${NC}\n"
+
+    echo -e "${BLUE}🧪 Running Android unit tests...${NC}"
+    set +e
+    (cd "$ANDROID_WORKDIR_PATH" && "$ANDROID_GRADLEW_PATH" test)
+    ANDROID_TEST_EXIT=$?
+    set -e
+
+    if [ $ANDROID_TEST_EXIT -ne 0 ]; then
+        echo -e "${RED}✗ Android tests failed${NC}"
+        ANDROID_TEST_FAILED=true
+    fi
+    echo -e "${GREEN}✓ Android unit tests passed${NC}\n"
+elif [ -n "$PUSHED_ANDROID_FILES" ]; then
+    echo -e "${YELLOW}⚠️  Android changes detected but Gradle wrapper not found. Skipping Android checks.${NC}\n"
+fi
+
+# ============================================
+# Step 3: Run Cursor Agent Code Review
 # ============================================
 echo -e "${BLUE}🤖 Running Cursor Agent code review...${NC}"
 
@@ -390,6 +491,17 @@ else
     PUSHED_DIFF=$(git diff "$REMOTE_SHA".."$LOCAL_SHA")
 fi
 
+# Trim very large diffs to avoid Cursor token limits
+MAX_DIFF_CHARS=120000
+MAX_DIFF_LINES=1200
+DIFF_NOTE=""
+REVIEW_DIFF="$PUSHED_DIFF"
+if [ ${#REVIEW_DIFF} -gt $MAX_DIFF_CHARS ]; then
+    DIFF_NOTE="(Diff truncated to first $MAX_DIFF_LINES lines to avoid size limits.)"
+    REVIEW_DIFF=$(echo "$REVIEW_DIFF" | head -n $MAX_DIFF_LINES)
+    echo -e "${YELLOW}⚠️  Large diff detected - limiting AI review to first $MAX_DIFF_LINES lines${NC}"
+fi
+
 if [ -z "$PUSHED_DIFF" ]; then
     echo -e "${GREEN}✓ No changes to review${NC}"
     exit 0
@@ -397,43 +509,38 @@ fi
 
 # Create a temporary file with the diff
 TEMP_DIFF_FILE=$(mktemp)
-echo "$PUSHED_DIFF" > "$TEMP_DIFF_FILE"
+echo "$REVIEW_DIFF" > "$TEMP_DIFF_FILE"
 
 # Prepare the prompt for Cursor Agent
-REVIEW_PROMPT="You are an EXTREMELY strict senior code reviewer for an iOS/Swift project. Your job is to catch EVERY issue that could cause problems. Be very thorough and strict.
+PLATFORM_CONTEXT="$( [ "$IS_IOS" = true ] && [ "$IS_ANDROID" = true ] && echo "iOS (Swift) and Android (Kotlin/Java)" || ( [ "$IS_IOS" = true ] && echo "iOS (Swift)" || ( [ "$IS_ANDROID" = true ] && echo "Android (Kotlin/Java)" || echo "mobile" ) ) )"
+
+REVIEW_PROMPT="You are an EXTREMELY strict senior code reviewer for a mobile project. Platform context: $PLATFORM_CONTEXT. Your job is to catch EVERY issue that could cause problems. Be very thorough and strict.
 
 MANDATORY - You MUST flag these as CRITICAL (blocks commit):
-1. ANY force unwrapping (!) - This is ALWAYS critical. Force unwrapping with ! will crash the app if the value is nil. Examples: \"value!\", \"optional!.property\", \"array![0]\", \"dict![\"key\"]\". Flag EVERY instance.
-2. Security vulnerabilities (hardcoded secrets, API keys, passwords, insecure data storage)
-3. Memory leaks, retain cycles, or strong reference cycles
+1. For iOS/Swift: ANY force unwrapping (!) is CRITICAL. Force unwrapping will crash if nil. Flag EVERY instance (value!, optional!.property, array![0], dict![\"key\"]). Also flag retain cycles, missing error handling that leads to crashes, thread safety violations, UI work off main thread.
+2. For Android/Kotlin/Java: unsafe !! (Kotlin) or unchecked nulls, lifecycle leaks, coroutine misuse (missing scope/cancellation), blocking main thread, accessing UI from background threads, exported components without protection, insecure storage/hardcoded secrets.
+3. Security vulnerabilities (hardcoded secrets, API keys, passwords, insecure data storage)
 4. Logic errors that will cause crashes or data corruption
-5. Missing error handling that could crash the app
-6. Thread safety violations (race conditions, accessing UI from background threads)
-7. Breaking API changes without proper migration or deprecation warnings
+5. Breaking API changes without proper migration or deprecation warnings
 
 HIGH (should fix - blocks commit):
-- Potential crashes (array out of bounds, nil coalescing issues, division by zero)
-- Performance issues (main thread blocking, expensive operations on UI thread, memory-intensive operations)
+- Potential crashes (array out of bounds, null handling issues, division by zero)
+- Performance issues (main/UI thread blocking, expensive operations on UI thread, memory-intensive operations)
 - Code smells that indicate bugs (unused variables that should be used, dead code, unreachable code)
-- Incorrect Swift patterns (using var instead of let, mutating immutable collections)
-- Missing null checks or optional handling that could fail
-- Incorrect async/await usage or missing await keywords
-- Incorrect SwiftUI patterns (state management issues, view lifecycle problems)
+- Incorrect platform patterns (bad optional handling, misuse of state/lifecycle, incorrect async/await/coroutine usage)
+- Missing input validation
 
 MEDIUM (should consider fixing):
 - Code quality issues (magic numbers, long methods, complex conditionals)
 - Potential bugs (off-by-one errors, incorrect comparisons, type mismatches)
 - Architectural concerns (tight coupling, violation of SOLID principles)
-- Missing input validation
 - Inefficient algorithms or data structures
 
 CRITICAL RULES:
-- If you see ANY force unwrapping (!), you MUST flag it as CRITICAL severity
-- Search the entire diff for the exclamation mark (!) character used for force unwrapping
-- Even if the force unwrap seems \"safe\", flag it - force unwrapping is dangerous and should use optional binding or nil coalescing instead
+- If you see ANY Swift force unwrapping (!) or Kotlin double-bang (!!), flag as CRITICAL severity
 - Be extremely thorough - scan every line of code
 
-Be very strict. If you see ANY force unwrapping, potential crashes, or problematic code, flag it immediately.
+Be very strict. If you see ANY force unwrapping, !!, potential crashes, or problematic code, flag it immediately.
 
 Respond ONLY in the following JSON format:
 {
@@ -455,8 +562,10 @@ Set has_critical_issues to true if you find ANY critical or high severity issues
 
 Here are the changes being pushed to review:
 
+${DIFF_NOTE:+$DIFF_NOTE
+}
 \`\`\`diff
-$PUSHED_DIFF
+$REVIEW_DIFF
 \`\`\`
 
 Respond ONLY with the JSON format above, no additional text."
@@ -524,8 +633,10 @@ else
     for i in $(seq 1 $TIMEOUT_SECONDS); do
         if ! kill -0 $CURSOR_PID 2>/dev/null; then
             # Process finished
+            set +e
             wait $CURSOR_PID
             CURSOR_EXIT_CODE=$?
+            set -e
             break
         fi
         sleep 1
@@ -535,7 +646,9 @@ else
     if kill -0 $CURSOR_PID 2>/dev/null; then
         TIMEOUT_REACHED=true
         kill $CURSOR_PID 2>/dev/null || true
+        set +e
         wait $CURSOR_PID 2>/dev/null || true
+        set -e
         CURSOR_EXIT_CODE=124
     fi
 fi
@@ -845,6 +958,12 @@ else
     echo -e "${YELLOW}⚠️  Proceeding without AI review...${NC}\n"
 fi
 
+# If Android lint/tests failed, block after running Cursor review so AI feedback is still shown
+if [ "${ANDROID_LINT_FAILED:-false}" = true ] || [ "${ANDROID_TEST_FAILED:-false}" = true ]; then
+    echo -e "${RED}✗ Android quality checks failed (lint/tests). Please fix before pushing.${NC}"
+    exit 1
+fi
+
 # Cleanup
 rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
 
@@ -867,12 +986,35 @@ echo -e "${GREEN}  Location: $PRE_PUSH_HOOK${NC}\n"
 # Setup Cursor Agent if available
 if [ "$CURSOR_AVAILABLE" = true ] && [ -n "$CURSOR_PATH" ]; then
     echo -e "${BLUE}🤖 Checking Cursor Agent authentication...${NC}"
-    
-    if "$CURSOR_PATH" agent status >/dev/null 2>&1; then
+
+    POST_STATUS_OUTPUT=$("$CURSOR_PATH" agent status 2>&1) || POST_STATUS_EXIT=$?
+    POST_STATUS_EXIT=${POST_STATUS_EXIT:-0}
+    if echo "$POST_STATUS_OUTPUT" | grep -Eqi "command not found|No such file|not recognized|unknown command|unknown subcommand|is not a valid command"; then
+        echo -e "${YELLOW}⚠️  Cursor CLI/Agent command not available${NC}"
+        echo -e "${YELLOW}  Please install or update Cursor so that 'cursor agent' works.${NC}"
+        echo -e "${YELLOW}  Status output:${NC}"
+        echo "$POST_STATUS_OUTPUT"
+        echo ""
+    elif echo "$POST_STATUS_OUTPUT" | grep -qi "not logged in"; then
+        echo -e "${YELLOW}⚠️  Cursor Agent is not authenticated${NC}"
+        echo -e "${YELLOW}  Status output:${NC}"
+        echo "$POST_STATUS_OUTPUT"
+        echo ""
+        
+        read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            "$CURSOR_PATH" agent login
+            echo ""
+        fi
+    elif [ $POST_STATUS_EXIT -eq 0 ]; then
         echo -e "${GREEN}✓ Cursor Agent is authenticated${NC}\n"
     else
         echo -e "${YELLOW}⚠️  Cursor Agent is not authenticated${NC}"
-        echo -e "${YELLOW}  The hook will work but AI review will be skipped${NC}\n"
+        echo -e "${YELLOW}  The hook will work but AI review will be skipped${NC}"
+        echo -e "${YELLOW}  Status output:${NC}"
+        echo "$POST_STATUS_OUTPUT"
+        echo ""
         
         read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
         echo
@@ -904,9 +1046,9 @@ fi
 cat > "$PRE_COMMIT_HOOK" << 'PRE_COMMIT_START'
 #!/bin/bash
 
-# Pre-commit hook for iOS/Swift project
-# This hook runs SwiftLint on staged files and shows warnings
-# It does NOT block commits - only provides feedback
+# Pre-commit hook for mobile projects (iOS/Android)
+# Runs SwiftLint and Android lint (if applicable) and shows warnings only
+# Does NOT block commits - only provides feedback
 
 set +e  # Don't exit on errors - we want to warn, not block
 
@@ -923,62 +1065,163 @@ PRE_COMMIT_START
 echo "SWIFTLINT_PATH=\"$SWIFTLINT_PATH\"" >> "$PRE_COMMIT_HOOK"
 echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_COMMIT_HOOK"
 echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_COMMIT_HOOK"
+echo "IS_IOS_PROJECT=\"$IS_IOS_PROJECT\"" >> "$PRE_COMMIT_HOOK"
+echo "IS_ANDROID_PROJECT=\"$IS_ANDROID_PROJECT\"" >> "$PRE_COMMIT_HOOK"
+echo "ANDROID_GRADLEW=\"$ANDROID_GRADLEW\"" >> "$PRE_COMMIT_HOOK"
+echo "ANDROID_WORKDIR=\"$ANDROID_WORKDIR\"" >> "$PRE_COMMIT_HOOK"
 
 cat >> "$PRE_COMMIT_HOOK" << 'PRE_COMMIT_END'
 
 echo -e "${BLUE}🔍 Running pre-commit checks (warnings only)...${NC}\n"
 
-# Get list of staged Swift files
-STAGED_SWIFT_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.swift$' || true)
+# Detect platform at hook runtime
+IS_IOS="$IS_IOS_PROJECT"
+IS_ANDROID="$IS_ANDROID_PROJECT"
 
-if [ -z "$STAGED_SWIFT_FILES" ]; then
-    echo -e "${GREEN}✓ No Swift files staged for commit${NC}"
+IOS_PROJECT=$(find "$PROJECT_ROOT" -maxdepth 3 \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) | head -n 1)
+if [ -n "$IOS_PROJECT" ]; then
+    IS_IOS=true
+fi
+
+ANDROID_GRADLEW_PATH="$ANDROID_GRADLEW"
+ANDROID_WORKDIR_PATH="$ANDROID_WORKDIR"
+if [ -z "$ANDROID_GRADLEW_PATH" ]; then
+    if [ -x "$PROJECT_ROOT/gradlew" ]; then
+        ANDROID_GRADLEW_PATH="$PROJECT_ROOT/gradlew"
+        ANDROID_WORKDIR_PATH="$PROJECT_ROOT"
+    elif [ -x "$PROJECT_ROOT/android/gradlew" ]; then
+        ANDROID_GRADLEW_PATH="$PROJECT_ROOT/android/gradlew"
+        ANDROID_WORKDIR_PATH="$PROJECT_ROOT/android"
+    fi
+fi
+if [ -n "$ANDROID_GRADLEW_PATH" ]; then
+    IS_ANDROID=true
+fi
+
+# Optional override via env: MOBILE_PLATFORM=ios|android|native (native => both)
+if [ -n "$MOBILE_PLATFORM" ]; then
+    PLATFORM_LOWER=$(echo "$MOBILE_PLATFORM" | tr '[:upper:]' '[:lower:]')
+    case "$PLATFORM_LOWER" in
+        ios)
+            IS_IOS=true
+            IS_ANDROID=false
+            ;;
+        android)
+            IS_IOS=false
+            IS_ANDROID=true
+            ;;
+        native|both|all)
+            IS_IOS=true
+            IS_ANDROID=true
+            ;;
+        *)
+            # Unknown override, keep autodetected values
+            ;;
+    esac
+fi
+
+echo -e "${BLUE}Platforms:${NC}"
+if [ "$IS_IOS" = true ]; then
+    echo -e "  • ${GREEN}iOS checks enabled${NC}"
+else
+    echo -e "  • ${YELLOW}iOS checks disabled (no project detected)${NC}"
+fi
+if [ "$IS_ANDROID" = true ]; then
+    echo -e "  • ${GREEN}Android checks enabled${NC}"
+else
+    echo -e "  • ${YELLOW}Android checks disabled (no Gradle wrapper found)${NC}"
+fi
+echo ""
+
+# Get list of staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM || true)
+STAGED_SWIFT_FILES=$(echo "$STAGED_FILES" | grep '\.swift$' || true)
+STAGED_ANDROID_FILES=$(echo "$STAGED_FILES" | grep -E '\.(kt|kts|java|xml|gradle|gradle\.kts)$' || true)
+
+if [ -z "$STAGED_SWIFT_FILES" ] && [ -z "$STAGED_ANDROID_FILES" ]; then
+    echo -e "${GREEN}✓ No iOS or Android files staged for commit${NC}"
     exit 0
 fi
 
-echo -e "${BLUE}📝 Staged Swift files:${NC}"
-echo "$STAGED_SWIFT_FILES"
-echo ""
+if [ -n "$STAGED_SWIFT_FILES" ]; then
+    echo -e "${BLUE}📝 Staged Swift files:${NC}"
+    echo "$STAGED_SWIFT_FILES"
+    echo ""
+fi
+
+if [ -n "$STAGED_ANDROID_FILES" ]; then
+    echo -e "${BLUE}📝 Staged Android-related files:${NC}"
+    echo "$STAGED_ANDROID_FILES"
+    echo ""
+fi
 
 cd "$PROJECT_ROOT"
 
 # ============================================
 # Step 1: Run SwiftLint (if available)
 # ============================================
-if [ -n "$SWIFTLINT_PATH" ] && [ -f "$SWIFTLINT_PATH" ]; then
-    echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
-    
-    HAS_LINT_ISSUES=false
-    SWIFTLINT_OUTPUT=""
-    
-    for file in $STAGED_SWIFT_FILES; do
-        if [ -f "$PROJECT_ROOT/$file" ]; then
-            # Run SwiftLint and capture both output and exit code
-            # SwiftLint takes the path as a positional argument, not --path
-            FILE_OUTPUT=$("$SWIFTLINT_PATH" lint "$PROJECT_ROOT/$file" 2>&1)
-            FILE_EXIT_CODE=$?
-            
-            if [ $FILE_EXIT_CODE -ne 0 ]; then
-                # SwiftLint returns non-zero on errors/warnings
-                HAS_LINT_ISSUES=true
-                SWIFTLINT_OUTPUT="$SWIFTLINT_OUTPUT$FILE_OUTPUT\n"
-            fi
-        fi
-    done
-    
-    if [ "$HAS_LINT_ISSUES" = true ]; then
-        echo -e "${YELLOW}⚠️  SwiftLint found issues (warnings only - commit will proceed):${NC}"
-        echo -e "$SWIFTLINT_OUTPUT"
-        echo ""
-        echo -e "${YELLOW}💡 Tip: Consider fixing these issues before committing${NC}\n"
-    else
-        echo -e "${GREEN}✓ SwiftLint passed${NC}\n"
+if [ "$IS_IOS" = true ] && [ -n "$STAGED_SWIFT_FILES" ]; then
+    SWIFTLINT_AVAILABLE=false
+    SWIFTLINT_CMD=""
+    if command -v swiftlint &> /dev/null; then
+        SWIFTLINT_CMD=$(command -v swiftlint)
+        SWIFTLINT_AVAILABLE=true
+    elif [ -f "/usr/local/bin/swiftlint" ]; then
+        SWIFTLINT_CMD="/usr/local/bin/swiftlint"
+        SWIFTLINT_AVAILABLE=true
+    elif [ -f "/opt/homebrew/bin/swiftlint" ]; then
+        SWIFTLINT_CMD="/opt/homebrew/bin/swiftlint"
+        SWIFTLINT_AVAILABLE=true
     fi
-else
-    echo -e "${YELLOW}⚠️  SwiftLint not found, skipping lint checks${NC}"
-    if [ -z "$SWIFTLINT_PATH" ]; then
+
+    if [ "$SWIFTLINT_AVAILABLE" = "true" ]; then
+        echo -e "${BLUE}🔎 Running SwiftLint...${NC}"
+        
+        HAS_LINT_ISSUES=false
+        SWIFTLINT_OUTPUT=""
+        
+        for file in $STAGED_SWIFT_FILES; do
+            if [ -f "$PROJECT_ROOT/$file" ]; then
+                FILE_OUTPUT=$("$SWIFTLINT_CMD" lint "$PROJECT_ROOT/$file" 2>&1)
+                FILE_EXIT_CODE=$?
+                
+                if [ $FILE_EXIT_CODE -ne 0 ]; then
+                    HAS_LINT_ISSUES=true
+                    SWIFTLINT_OUTPUT="$SWIFTLINT_OUTPUT$FILE_OUTPUT\n"
+                fi
+            fi
+        done
+        
+        if [ "$HAS_LINT_ISSUES" = true ]; then
+            echo -e "${YELLOW}⚠️  SwiftLint found issues (warnings only - commit will proceed):${NC}"
+            echo -e "$SWIFTLINT_OUTPUT"
+            echo ""
+            echo -e "${YELLOW}💡 Tip: Consider fixing these issues before committing${NC}\n"
+        else
+            echo -e "${GREEN}✓ SwiftLint passed${NC}\n"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  SwiftLint not available, skipping lint checks${NC}\n"
         echo -e "${YELLOW}  Install with: brew install swiftlint${NC}\n"
     fi
+else
+    echo -e "${YELLOW}⚠️  Skipping SwiftLint (no iOS project or no Swift files)${NC}\n"
+fi
+
+# ============================================
+# Step 1.5: Run Android lint (warnings only)
+# ============================================
+if [ "$IS_ANDROID" = true ] && [ -n "$STAGED_ANDROID_FILES" ]; then
+    echo -e "${BLUE}🤖 Running Android lint (warnings only)...${NC}"
+    (cd "$ANDROID_WORKDIR_PATH" && "$ANDROID_GRADLEW_PATH" lint)
+    ANDROID_LINT_EXIT=$?
+    if [ $ANDROID_LINT_EXIT -ne 0 ]; then
+        echo -e "${YELLOW}⚠️  Android lint reported issues (commit will proceed)${NC}\n"
+    else
+        echo -e "${GREEN}✓ Android lint passed${NC}\n"
+    fi
+elif [ -n "$STAGED_ANDROID_FILES" ]; then
+    echo -e "${YELLOW}⚠️  Android changes detected but Gradle wrapper not found. Skipping Android lint.${NC}\n"
 fi
 
 # ============================================
@@ -992,21 +1235,33 @@ if [ -n "$CURSOR_CLI" ] && [ -f "$CURSOR_CLI" ]; then
         # Get the diff of staged changes
         STAGED_DIFF=$(git diff --cached)
         
+        # Trim very large diffs to avoid Cursor token limits
+        MAX_DIFF_CHARS=120000
+        MAX_DIFF_LINES=1200
+        DIFF_NOTE=""
+        REVIEW_DIFF="$STAGED_DIFF"
+        if [ ${#REVIEW_DIFF} -gt $MAX_DIFF_CHARS ]; then
+            DIFF_NOTE="(Diff truncated to first $MAX_DIFF_LINES lines to avoid size limits.)"
+            REVIEW_DIFF=$(echo "$REVIEW_DIFF" | head -n $MAX_DIFF_LINES)
+            echo -e "${YELLOW}⚠️  Large diff detected - limiting AI review to first $MAX_DIFF_LINES lines${NC}"
+        fi
+        
         if [ -n "$STAGED_DIFF" ]; then
             # Create a temporary file with the diff
             TEMP_DIFF_FILE=$(mktemp)
-            echo "$STAGED_DIFF" > "$TEMP_DIFF_FILE"
+            echo "$REVIEW_DIFF" > "$TEMP_DIFF_FILE"
             
             # Prepare the prompt for Cursor Agent (less strict for pre-commit)
-            REVIEW_PROMPT="You are a code reviewer for an iOS/Swift project. Review the staged changes and identify any issues. Be helpful but not overly strict.
+            PLATFORM_CONTEXT="$( [ "$IS_IOS" = true ] && [ "$IS_ANDROID" = true ] && echo "iOS (Swift) and Android (Kotlin/Java)" || ( [ "$IS_IOS" = true ] && echo "iOS (Swift)" || ( [ "$IS_ANDROID" = true ] && echo "Android (Kotlin/Java)" || echo "mobile" ) ) )"
+            REVIEW_PROMPT="You are a code reviewer for a mobile project. Platform context: $PLATFORM_CONTEXT. Review the staged changes and identify any issues. Be helpful but not overly strict.
 
-Look for:
-- Force unwrapping (!) that could cause crashes
+Look for (flag as critical/high when severe):
+- For iOS/Swift: force unwrapping (!), retain cycles, unsafe optional handling, missing error handling that can crash, UI work on background threads
+- For Android/Kotlin/Java: unsafe !! or null handling issues, lifecycle leaks, coroutine misuse, blocking work on main thread, exported components/security issues
 - Security vulnerabilities (hardcoded secrets, insecure storage)
-- Memory leaks or retain cycles
 - Logic errors that could cause crashes
 - Thread safety violations
-- Performance issues
+- Performance issues (main thread blocking, heavy operations)
 
 Respond ONLY in the following JSON format:
 {
@@ -1026,8 +1281,10 @@ Respond ONLY in the following JSON format:
 
 Here are the staged changes to review:
 
+${DIFF_NOTE:+$DIFF_NOTE
+}
 \`\`\`diff
-$STAGED_DIFF
+$REVIEW_DIFF
 \`\`\`
 
 Respond ONLY with the JSON format above, no additional text."
@@ -1056,8 +1313,10 @@ Respond ONLY with the JSON format above, no additional text."
                 TIMEOUT_REACHED=false
                 for i in $(seq 1 $TIMEOUT_SECONDS); do
                     if ! kill -0 $CURSOR_PID 2>/dev/null; then
+                        set +e
                         wait $CURSOR_PID
                         CURSOR_EXIT_CODE=$?
+                        set -e
                         break
                     fi
                     sleep 1
@@ -1066,7 +1325,9 @@ Respond ONLY with the JSON format above, no additional text."
                 if kill -0 $CURSOR_PID 2>/dev/null; then
                     TIMEOUT_REACHED=true
                     kill $CURSOR_PID 2>/dev/null || true
+                    set +e
                     wait $CURSOR_PID 2>/dev/null || true
+                    set -e
                     CURSOR_EXIT_CODE=124
                 fi
             fi
@@ -1079,7 +1340,17 @@ Respond ONLY with the JSON format above, no additional text."
                 echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
                 rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
             elif [ $CURSOR_EXIT_CODE -ne 0 ]; then
-                echo -e "${YELLOW}⚠️  Cursor Agent review failed (warnings only - commit will proceed)${NC}\n"
+                echo -e "${YELLOW}⚠️  Cursor Agent review failed (warnings only - commit will proceed)${NC}"
+                echo -e "${YELLOW}  Exit code: $CURSOR_EXIT_CODE${NC}"
+                if [ -s "$CURSOR_ERROR_FILE" ]; then
+                    echo -e "${YELLOW}  Error output:${NC}"
+                    cat "$CURSOR_ERROR_FILE"
+                fi
+                if [ -s "$CURSOR_OUTPUT_FILE" ]; then
+                    echo -e "${YELLOW}  Partial response:${NC}"
+                    head -n 20 "$CURSOR_OUTPUT_FILE"
+                fi
+                echo ""
                 rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
             elif [ -s "$CURSOR_OUTPUT_FILE" ]; then
                 # Parse the Cursor Agent output using the same extraction logic as pre-push
@@ -1288,9 +1559,8 @@ echo -e "  1. ✓ Runs SwiftLint on staged Swift files (if available)"
 echo -e "  2. ⚠️  Shows warnings but does NOT block commits\n"
 echo -e "${GREEN}Pre-push hook (strict):${NC}"
 echo -e "  1. ✓ Runs SwiftLint on Swift files being pushed (if available)"
-echo -e "  2. ✓ Runs Xcode build check (if Xcode project found)"
-echo -e "  3. ✓ Uses Cursor AI to review code changes for critical issues"
-echo -e "  4. ✓ Blocks push if critical problems are found\n"
+echo -e "  2. ✓ Uses Cursor AI to review code changes for critical issues"
+echo -e "  3. ✓ Blocks push if critical problems are found\n"
 
 echo -e "${BLUE}Usage:${NC}"
 echo -e "  • Normal commit: ${GREEN}git commit -m \"message\"${NC} (warnings only)"
