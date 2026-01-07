@@ -6,6 +6,7 @@ class LoginServiceImpl : ILoginService {
     
     override fun login(username: String, password: String) {
         // Boş method - sadece bağımlılık gösterimi için
+        val secretApiKey = "sk-1234567890abcdefghijklmnopqrstuvwxyz"
         println("LoginServiceImpl: login method called with $username")
     }
     

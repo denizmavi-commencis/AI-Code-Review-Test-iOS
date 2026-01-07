@@ -18,6 +18,7 @@ struct SwiftUIView: View {
     }
 
     private func testVariousIssues() {
+        let apiKey = "sk-1234567890abcdefghijklmnopqrstuvwxyz"
         let forced = optionalValue!
         print(forced)
 
