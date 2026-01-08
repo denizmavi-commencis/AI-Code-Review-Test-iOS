@@ -57,10 +57,12 @@ fi
 # Check prerequisites
 echo -e "${BLUE}🔍 Checking prerequisites...${NC}\n"
 
-# Check Cursor CLI - try multiple locations (required)
+# Check Cursor CLI - try multiple locations
 CURSOR_PATH=""
 CURSOR_AVAILABLE=false
 CURSOR_AGENT_BIN=""
+CURSOR_AUTHENTICATED=false
+
 if command -v cursor &> /dev/null; then
     CURSOR_PATH=$(which cursor)
     CURSOR_AVAILABLE=true
@@ -75,76 +77,209 @@ elif [ -f "$HOME/.local/bin/cursor" ]; then
     CURSOR_AVAILABLE=true
 fi
 
-# Require cursor-agent to be runnable from the terminal PATH (no GUI fallbacks)
-if command -v cursor-agent &> /dev/null; then
-    CURSOR_AGENT_BIN=$(which cursor-agent)
+# Check if Cursor Agent is available and authenticated
+if [ "$CURSOR_AVAILABLE" = true ]; then
+    # Require cursor-agent to be runnable from the terminal PATH (no GUI fallbacks)
+    if command -v cursor-agent &> /dev/null; then
+        CURSOR_AGENT_BIN=$(which cursor-agent)
+    fi
+
+    # Ensure Cursor Agent binary is runnable (not just GUI)
+    if [ -n "$CURSOR_AGENT_BIN" ] && [ -x "$CURSOR_AGENT_BIN" ]; then
+        # Ensure Cursor has the agent subcommand available
+        if "$CURSOR_PATH" agent --help >/dev/null 2>&1; then
+            # Quick reachability/auth check
+            CURSOR_STATUS_OUTPUT=$("$CURSOR_PATH" agent status 2>&1) || CURSOR_STATUS_EXIT=$?
+            CURSOR_STATUS_EXIT=${CURSOR_STATUS_EXIT:-0}
+            if ! echo "$CURSOR_STATUS_OUTPUT" | grep -Eqi "command not found|No such file|not recognized|unknown command|unknown subcommand|is not a valid command"; then
+                if ! echo "$CURSOR_STATUS_OUTPUT" | grep -qi "not logged in"; then
+                    if [ $CURSOR_STATUS_EXIT -eq 0 ]; then
+                        CURSOR_AUTHENTICATED=true
+                        echo -e "${GREEN}✓ Cursor Agent CLI available and authenticated${NC}"
+                    fi
+                fi
+            fi
+        fi
+    fi
 fi
 
-if [ "$CURSOR_AVAILABLE" != true ]; then
-    echo -e "${RED}✗ Error: Cursor Agent CLI not found${NC}"
-    echo -e "${YELLOW}  Install Cursor CLI and ensure it's on your PATH.${NC}"
-    if [ "$BREW_AVAILABLE" = true ]; then
-        echo -e "${YELLOW}  Install via Homebrew: brew install cursor-cli${NC}"
+# Check CodeRabbit CLI - try multiple locations
+CODERABBIT_PATH=""
+CODERABBIT_AVAILABLE=false
+CODERABBIT_AUTHENTICATED=false
+
+# Try to find CodeRabbit in common locations
+if command -v coderabbit &> /dev/null; then
+    CODERABBIT_PATH=$(which coderabbit)
+    CODERABBIT_AVAILABLE=true
+elif [ -f "$HOME/.local/bin/coderabbit" ]; then
+    CODERABBIT_PATH="$HOME/.local/bin/coderabbit"
+    CODERABBIT_AVAILABLE=true
+elif [ -f "/usr/local/bin/coderabbit" ]; then
+    CODERABBIT_PATH="/usr/local/bin/coderabbit"
+    CODERABBIT_AVAILABLE=true
+elif [ -f "/opt/homebrew/bin/coderabbit" ]; then
+    CODERABBIT_PATH="/opt/homebrew/bin/coderabbit"
+    CODERABBIT_AVAILABLE=true
+fi
+
+if [ "$CODERABBIT_AVAILABLE" = true ] && [ -n "$CODERABBIT_PATH" ]; then
+    # Check if CodeRabbit is authenticated
+    # Note: auth status returns non-zero when not authenticated, but command exists
+    CODERABBIT_AUTH_OUTPUT=$("$CODERABBIT_PATH" auth status 2>&1) || CODERABBIT_AUTH_EXIT=$?
+    CODERABBIT_AUTH_EXIT=${CODERABBIT_AUTH_EXIT:-0}
+    
+    # Check if output indicates authentication (look for success indicators)
+    # CodeRabbit shows "Not logged in" when not authenticated, or success messages when authenticated
+    if echo "$CODERABBIT_AUTH_OUTPUT" | grep -qiE "authenticated.*yes|logged in.*yes|✓.*authenticated|successfully authenticated" || \
+       ([ $CODERABBIT_AUTH_EXIT -eq 0 ] && ! echo "$CODERABBIT_AUTH_OUTPUT" | grep -qi "not logged in\|not authenticated"); then
+        CODERABBIT_AUTHENTICATED=true
+        echo -e "${GREEN}✓ CodeRabbit CLI available and authenticated${NC}"
     else
-        echo -e "${YELLOW}  Homebrew not found. Install Homebrew then run: brew install cursor-cli${NC}"
+        echo -e "${YELLOW}⚠️  CodeRabbit CLI found but not authenticated${NC}"
     fi
+else
+    echo -e "${YELLOW}⚠️  CodeRabbit CLI not found${NC}"
     echo -e "${YELLOW}  Checked locations:${NC}"
-    echo -e "${YELLOW}    - PATH (which cursor)${NC}"
-    echo -e "${YELLOW}    - /Applications/Cursor.app/Contents/Resources/app/bin/cursor${NC}"
-    echo -e "${YELLOW}    - ~/.cursor/bin/cursor${NC}"
-    echo -e "${YELLOW}    - ~/.local/bin/cursor${NC}"
-    exit 1
+    echo -e "${YELLOW}    - PATH (which coderabbit)${NC}"
+    echo -e "${YELLOW}    - ~/.local/bin/coderabbit${NC}"
+    echo -e "${YELLOW}    - /usr/local/bin/coderabbit${NC}"
+    echo -e "${YELLOW}    - /opt/homebrew/bin/coderabbit${NC}"
 fi
 
-# Ensure Cursor Agent binary is runnable (not just GUI)
-if [ -z "$CURSOR_AGENT_BIN" ] || [ ! -x "$CURSOR_AGENT_BIN" ]; then
-    echo -e "${RED}✗ Error: Cursor Agent binary not available from this terminal${NC}"
-    if [ "$BREW_AVAILABLE" = true ]; then
-        echo -e "${YELLOW}  Install via Homebrew: brew install cursor-cli${NC}"
+# Determine which tool to use
+SELECTED_TOOL=""
+SELECTED_TOOL_PATH=""
+
+# If both are available and authenticated, ask user
+if [ "$CURSOR_AUTHENTICATED" = true ] && [ "$CODERABBIT_AUTHENTICATED" = true ]; then
+    echo ""
+    echo -e "${BLUE}Both Cursor and CodeRabbit are available and authenticated.${NC}"
+    echo -e "${BLUE}Which tool would you like to use for code reviews?${NC}"
+    echo -e "  1) Cursor Agent"
+    echo -e "  2) CodeRabbit"
+    read -p "Enter your choice (1 or 2): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[2]$ ]]; then
+        SELECTED_TOOL="coderabbit"
+        SELECTED_TOOL_PATH="$CODERABBIT_PATH"
+        echo -e "${GREEN}✓ Selected CodeRabbit for code reviews${NC}\n"
     else
-        echo -e "${YELLOW}  Homebrew not found. Install Homebrew then run: brew install cursor-cli${NC}"
+        SELECTED_TOOL="cursor"
+        SELECTED_TOOL_PATH="$CURSOR_PATH"
+        echo -e "${GREEN}✓ Selected Cursor Agent for code reviews${NC}\n"
     fi
-    echo -e "${YELLOW}  We could not run 'cursor-agent' from PATH (no GUI fallback used).${NC}"
-    echo -e "${YELLOW}  Detected cursor CLI (may be GUI-only): ${CURSOR_PATH:-<none>}${NC}"
-    exit 1
+# If only CodeRabbit is available and authenticated
+elif [ "$CODERABBIT_AUTHENTICATED" = true ] && [ "$CURSOR_AUTHENTICATED" != true ]; then
+    echo -e "${BLUE}ℹ️  CodeRabbit is available and authenticated, but Cursor is not.${NC}"
+    echo -e "${BLUE}ℹ️  Using CodeRabbit for code reviews.${NC}\n"
+    SELECTED_TOOL="coderabbit"
+    SELECTED_TOOL_PATH="$CODERABBIT_PATH"
+# If only Cursor is available and authenticated
+elif [ "$CURSOR_AUTHENTICATED" = true ] && [ "$CODERABBIT_AUTHENTICATED" != true ]; then
+    SELECTED_TOOL="cursor"
+    SELECTED_TOOL_PATH="$CURSOR_PATH"
+    echo -e "${GREEN}✓ Using Cursor Agent for code reviews${NC}\n"
+# If CodeRabbit is available but not authenticated
+elif [ "$CODERABBIT_AVAILABLE" = true ] && [ "$CODERABBIT_AUTHENTICATED" != true ]; then
+    echo -e "${YELLOW}⚠️  CodeRabbit CLI found but not authenticated${NC}"
+    read -p "Do you want to authenticate CodeRabbit now? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if "$CODERABBIT_PATH" auth login; then
+            CODERABBIT_AUTHENTICATED=true
+            SELECTED_TOOL="coderabbit"
+            SELECTED_TOOL_PATH="$CODERABBIT_PATH"
+            echo -e "${GREEN}✓ CodeRabbit authenticated successfully${NC}\n"
+        else
+            echo -e "${RED}✗ CodeRabbit authentication failed${NC}\n"
+        fi
+    fi
+    
+    # If CodeRabbit authentication was declined or failed, check Cursor
+    if [ -z "$SELECTED_TOOL" ] && [ "$CURSOR_AVAILABLE" = true ] && [ "$CURSOR_AUTHENTICATED" != true ]; then
+        echo -e "${YELLOW}⚠️  Cursor CLI found but not authenticated${NC}"
+        read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if "$CURSOR_PATH" agent login; then
+                CURSOR_AUTHENTICATED=true
+                SELECTED_TOOL="cursor"
+                SELECTED_TOOL_PATH="$CURSOR_PATH"
+                echo -e "${GREEN}✓ Cursor Agent authenticated successfully${NC}\n"
+            else
+                echo -e "${RED}✗ Cursor Agent authentication failed${NC}\n"
+            fi
+        fi
+    fi
+# If neither is available/authenticated, try to set up CodeRabbit
+elif [ "$CURSOR_AUTHENTICATED" != true ] && [ "$CODERABBIT_AUTHENTICATED" != true ]; then
+    echo -e "${YELLOW}⚠️  Neither Cursor Agent nor CodeRabbit is available and authenticated${NC}"
+    
+    # Offer to install CodeRabbit
+    if [ "$CODERABBIT_AVAILABLE" != true ]; then
+        echo -e "${BLUE}Would you like to install CodeRabbit CLI?${NC}"
+        read -p "Install CodeRabbit CLI? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}Installing CodeRabbit CLI...${NC}"
+            if curl -fsSL https://cli.coderabbit.ai/install.sh | sh; then
+                CODERABBIT_PATH=$(which coderabbit 2>/dev/null || echo "")
+                if [ -n "$CODERABBIT_PATH" ]; then
+                    CODERABBIT_AVAILABLE=true
+                    echo -e "${GREEN}✓ CodeRabbit CLI installed successfully${NC}"
+                else
+                    echo -e "${RED}✗ CodeRabbit CLI installation may have failed. Please add it to your PATH.${NC}"
+                fi
+            else
+                echo -e "${RED}✗ CodeRabbit CLI installation failed${NC}"
+            fi
+        fi
+    fi
+    
+    # If CodeRabbit is now available, authenticate it
+    if [ "$CODERABBIT_AVAILABLE" = true ] && [ -n "$CODERABBIT_PATH" ]; then
+        echo -e "${BLUE}Authenticating CodeRabbit...${NC}"
+        read -p "Do you want to authenticate CodeRabbit now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if "$CODERABBIT_PATH" auth login; then
+                CODERABBIT_AUTHENTICATED=true
+                SELECTED_TOOL="coderabbit"
+                SELECTED_TOOL_PATH="$CODERABBIT_PATH"
+                echo -e "${GREEN}✓ CodeRabbit authenticated successfully${NC}\n"
+            else
+                echo -e "${RED}✗ CodeRabbit authentication failed${NC}\n"
+            fi
+        fi
+    fi
+    
+    # If still no tool selected, check Cursor
+    if [ -z "$SELECTED_TOOL" ] && [ "$CURSOR_AVAILABLE" = true ]; then
+        echo -e "${YELLOW}⚠️  Cursor CLI found but not authenticated${NC}"
+        read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if "$CURSOR_PATH" agent login; then
+                CURSOR_AUTHENTICATED=true
+                SELECTED_TOOL="cursor"
+                SELECTED_TOOL_PATH="$CURSOR_PATH"
+                echo -e "${GREEN}✓ Cursor Agent authenticated successfully${NC}\n"
+            else
+                echo -e "${RED}✗ Cursor Agent authentication failed${NC}\n"
+            fi
+        fi
+    fi
+    
+    # Final check - require at least one tool
+    if [ -z "$SELECTED_TOOL" ]; then
+        echo -e "${RED}✗ Error: No code review tool is available and authenticated${NC}"
+        echo -e "${YELLOW}  Please install and authenticate either:${NC}"
+        echo -e "${YELLOW}    - Cursor Agent: brew install cursor-cli && cursor agent login${NC}"
+        echo -e "${YELLOW}    - CodeRabbit: curl -fsSL https://cli.coderabbit.ai/install.sh | sh && coderabbit auth login${NC}"
+        exit 1
+    fi
 fi
-
-# Ensure Cursor has the agent subcommand available
-if ! "$CURSOR_PATH" agent --help >/dev/null 2>&1; then
-    echo -e "${RED}✗ Error: Cursor CLI found but 'cursor agent' command is unavailable${NC}"
-    echo -e "${YELLOW}  Please update Cursor to a version that includes Cursor Agent.${NC}"
-    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Cursor Agent CLI available${NC}"
-
-# Quick reachability/auth check (required)
-CURSOR_STATUS_OUTPUT=$("$CURSOR_PATH" agent status 2>&1) || CURSOR_STATUS_EXIT=$?
-CURSOR_STATUS_EXIT=${CURSOR_STATUS_EXIT:-0}
-if echo "$CURSOR_STATUS_OUTPUT" | grep -Eqi "command not found|No such file|not recognized|unknown command|unknown subcommand|is not a valid command"; then
-    echo -e "${RED}✗ Error: Cursor CLI/Agent command not available${NC}"
-    echo -e "${YELLOW}  Please install or update Cursor so that 'cursor agent' works.${NC}"
-    echo -e "${YELLOW}  Detected CLI path (may be stale): $CURSOR_PATH${NC}"
-    echo -e "${YELLOW}  Status output:${NC}"
-    echo "$CURSOR_STATUS_OUTPUT"
-    exit 1
-elif echo "$CURSOR_STATUS_OUTPUT" | grep -qi "not logged in"; then
-    echo -e "${RED}✗ Error: Cursor Agent not authenticated${NC}"
-    echo -e "${YELLOW}  Run: cursor agent login${NC}"
-    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
-    echo -e "${YELLOW}  Status output:${NC}"
-    echo "$CURSOR_STATUS_OUTPUT"
-    exit 1
-elif [ $CURSOR_STATUS_EXIT -ne 0 ]; then
-    echo -e "${RED}✗ Error: Cursor Agent unreachable${NC}"
-    echo -e "${YELLOW}  Detected CLI: $CURSOR_PATH${NC}"
-    echo -e "${YELLOW}  Status output:${NC}"
-    echo "$CURSOR_STATUS_OUTPUT"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Cursor Agent status reachable${NC}\n"
 
 # Check Python
 if ! command -v python3 &> /dev/null; then
@@ -184,11 +319,11 @@ fi
 cat > "$PRE_PUSH_HOOK" << 'HOOK_SCRIPT_START'
 #!/bin/bash
 
-# Pre-push hook for mobile projects (iOS/Android) with Cursor AI code review
+# Pre-push hook for mobile projects (iOS/Android) with AI code review
 # This hook will:
 # 1. Run SwiftLint on Swift files being pushed (if available)
 # 2. Run Android lint and unit tests when Android changes are present
-# 3. Use Cursor Agent to review code changes
+# 3. Use AI tool (Cursor Agent or CodeRabbit) to review code changes
 # 4. Block push if critical issues are found
 
 set -e
@@ -212,7 +347,10 @@ NC='\033[0m' # No Color
 HOOK_SCRIPT_START
 
 # Add dynamic paths
+echo "REVIEW_TOOL=\"$SELECTED_TOOL\"" >> "$PRE_PUSH_HOOK"
+echo "REVIEW_TOOL_PATH=\"$SELECTED_TOOL_PATH\"" >> "$PRE_PUSH_HOOK"
 echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_PUSH_HOOK"
+echo "CODERABBIT_CLI=\"$CODERABBIT_PATH\"" >> "$PRE_PUSH_HOOK"
 echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_PUSH_HOOK"
 echo "SWIFTLINT_AVAILABLE=\"$SWIFTLINT_AVAILABLE\"" >> "$PRE_PUSH_HOOK"
 echo "IS_IOS_PROJECT=\"$IS_IOS_PROJECT\"" >> "$PRE_PUSH_HOOK"
@@ -477,9 +615,52 @@ elif [ -n "$PUSHED_ANDROID_FILES" ]; then
 fi
 
 # ============================================
-# Step 3: Run Cursor Agent Code Review
+# Step 3: Run AI Code Review (Cursor Agent or CodeRabbit)
 # ============================================
-echo -e "${BLUE}🤖 Running Cursor Agent code review...${NC}"
+# Determine which tool to use (runtime fallback if not set)
+if [ -z "$REVIEW_TOOL" ]; then
+    # Try to detect at runtime
+    if [ -n "$REVIEW_TOOL_PATH" ] && [ -f "$REVIEW_TOOL_PATH" ]; then
+        if echo "$REVIEW_TOOL_PATH" | grep -qi "cursor"; then
+            REVIEW_TOOL="cursor"
+        elif echo "$REVIEW_TOOL_PATH" | grep -qi "coderabbit"; then
+            REVIEW_TOOL="coderabbit"
+        fi
+    fi
+    
+    # Fallback: try to find available tool
+    if [ -z "$REVIEW_TOOL" ]; then
+        if command -v coderabbit &> /dev/null; then
+            # Check CodeRabbit authentication by parsing output
+            CODERABBIT_AUTH_OUTPUT=$(coderabbit auth status 2>&1) || CODERABBIT_AUTH_EXIT=$?
+            CODERABBIT_AUTH_EXIT=${CODERABBIT_AUTH_EXIT:-0}
+            if echo "$CODERABBIT_AUTH_OUTPUT" | grep -qiE "authenticated.*yes|logged in.*yes|✓.*authenticated|successfully authenticated" || \
+               ([ $CODERABBIT_AUTH_EXIT -eq 0 ] && ! echo "$CODERABBIT_AUTH_OUTPUT" | grep -qi "not logged in\|not authenticated"); then
+                REVIEW_TOOL="coderabbit"
+                REVIEW_TOOL_PATH=$(which coderabbit)
+            fi
+        elif command -v cursor &> /dev/null && cursor agent status >/dev/null 2>&1; then
+            REVIEW_TOOL="cursor"
+            REVIEW_TOOL_PATH=$(which cursor)
+        fi
+    fi
+fi
+
+if [ -z "$REVIEW_TOOL" ] || [ -z "$REVIEW_TOOL_PATH" ]; then
+    echo -e "${YELLOW}⚠️  No AI review tool available or authenticated${NC}"
+    echo -e "${YELLOW}⚠️  Skipping AI code review...${NC}\n"
+    exit 0
+fi
+
+if [ "$REVIEW_TOOL" = "cursor" ]; then
+    echo -e "${BLUE}🤖 Running Cursor Agent code review...${NC}"
+elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+    echo -e "${BLUE}🤖 Running CodeRabbit code review...${NC}"
+else
+    echo -e "${YELLOW}⚠️  Unknown review tool: $REVIEW_TOOL${NC}"
+    echo -e "${YELLOW}⚠️  Skipping AI code review...${NC}\n"
+    exit 0
+fi
 
 # Get the diff of commits being pushed
 # Handle empty tree case (new branch with no merge base)
@@ -570,42 +751,63 @@ $REVIEW_DIFF
 
 Respond ONLY with the JSON format above, no additional text."
 
-# Run Cursor Agent in non-interactive mode
-CURSOR_OUTPUT_FILE=$(mktemp)
-CURSOR_ERROR_FILE=$(mktemp)
+# Run AI review tool in non-interactive mode
+REVIEW_OUTPUT_FILE=$(mktemp)
+REVIEW_ERROR_FILE=$(mktemp)
 
-# Check if Cursor CLI exists - try multiple locations
-if [ ! -f "$CURSOR_CLI" ]; then
-    # Try to find cursor in common locations
-    if command -v cursor &> /dev/null; then
-        CURSOR_CLI=$(which cursor)
-    elif [ -f "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" ]; then
-        CURSOR_CLI="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
-    elif [ -f "$HOME/.cursor/bin/cursor" ]; then
-        CURSOR_CLI="$HOME/.cursor/bin/cursor"
-    elif [ -f "$HOME/.local/bin/cursor" ]; then
-        CURSOR_CLI="$HOME/.local/bin/cursor"
-    else
-        echo -e "${YELLOW}⚠️  Cursor CLI not found${NC}"
-        echo -e "${YELLOW}⚠️  Checked locations:${NC}"
-        echo -e "${YELLOW}    - $CURSOR_CLI${NC}"
-        echo -e "${YELLOW}    - PATH (which cursor)${NC}"
-        echo -e "${YELLOW}    - /Applications/Cursor.app/Contents/Resources/app/bin/cursor${NC}"
-        echo -e "${YELLOW}    - ~/.cursor/bin/cursor${NC}"
-        echo -e "${YELLOW}    - ~/.local/bin/cursor${NC}"
-        echo -e "${YELLOW}⚠️  Skipping Cursor Agent review...${NC}\n"
-        rm -f "$TEMP_DIFF_FILE" "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+# Verify tool is available and authenticated
+if [ "$REVIEW_TOOL" = "cursor" ]; then
+    # Check if Cursor CLI exists - try multiple locations
+    if [ ! -f "$REVIEW_TOOL_PATH" ]; then
+        # Try to find cursor in common locations
+        if command -v cursor &> /dev/null; then
+            REVIEW_TOOL_PATH=$(which cursor)
+        elif [ -f "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" ]; then
+            REVIEW_TOOL_PATH="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+        elif [ -f "$HOME/.cursor/bin/cursor" ]; then
+            REVIEW_TOOL_PATH="$HOME/.cursor/bin/cursor"
+        elif [ -f "$HOME/.local/bin/cursor" ]; then
+            REVIEW_TOOL_PATH="$HOME/.local/bin/cursor"
+        else
+            echo -e "${YELLOW}⚠️  Cursor CLI not found${NC}"
+            echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
+            rm -f "$TEMP_DIFF_FILE" "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+            exit 0
+        fi
+    fi
+    
+    # Check if Cursor Agent is logged in
+    if ! "$REVIEW_TOOL_PATH" agent status >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  Cursor Agent is not logged in. Run 'cursor agent login' first.${NC}"
+        echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
+        rm -f "$TEMP_DIFF_FILE" "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
         exit 0
     fi
-fi
-
-# Check if Cursor Agent is logged in
-if ! "$CURSOR_CLI" agent status >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  Cursor Agent is not logged in. Run 'cursor agent login' first.${NC}"
-    echo -e "${YELLOW}  Or if cursor is not in PATH, use the full path to cursor CLI${NC}"
-    echo -e "${YELLOW}⚠️  Skipping Cursor Agent review...${NC}\n"
-    rm -f "$TEMP_DIFF_FILE" "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
-    exit 0
+elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+    # Check if CodeRabbit CLI exists
+    if [ ! -f "$REVIEW_TOOL_PATH" ]; then
+        if command -v coderabbit &> /dev/null; then
+            REVIEW_TOOL_PATH=$(which coderabbit)
+        else
+            echo -e "${YELLOW}⚠️  CodeRabbit CLI not found${NC}"
+            echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
+            rm -f "$TEMP_DIFF_FILE" "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+            exit 0
+        fi
+    fi
+    
+    # Check if CodeRabbit is authenticated (parse output, not just exit code)
+    CODERABBIT_AUTH_OUTPUT=$("$REVIEW_TOOL_PATH" auth status 2>&1) || CODERABBIT_AUTH_EXIT=$?
+    CODERABBIT_AUTH_EXIT=${CODERABBIT_AUTH_EXIT:-0}
+    
+    # Check if output indicates authentication
+    if ! (echo "$CODERABBIT_AUTH_OUTPUT" | grep -qiE "authenticated.*yes|logged in.*yes|✓.*authenticated|successfully authenticated" || \
+          ([ $CODERABBIT_AUTH_EXIT -eq 0 ] && ! echo "$CODERABBIT_AUTH_OUTPUT" | grep -qi "not logged in\|not authenticated")); then
+        echo -e "${YELLOW}⚠️  CodeRabbit is not authenticated. Run 'coderabbit auth login' first.${NC}"
+        echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
+        rm -f "$TEMP_DIFF_FILE" "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+        exit 0
+    fi
 fi
 
 # Run the review with timeout
@@ -613,74 +815,198 @@ echo -e "${BLUE}Analyzing code changes... (this may take a moment)${NC}"
 
 # macOS-compatible timeout: try gtimeout (coreutils), then use bash-based timeout
 TIMEOUT_SECONDS=120
-CURSOR_EXIT_CODE=0
+REVIEW_EXIT_CODE=0
 
-if command -v gtimeout &> /dev/null; then
-    # Use gtimeout from coreutils if available
-    if gtimeout ${TIMEOUT_SECONDS}s "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE"; then
-        CURSOR_EXIT_CODE=0
-    else
-        CURSOR_EXIT_CODE=$?
-    fi
-else
-    # Bash-based timeout implementation for macOS
-    # Run command in background and kill it after timeout
-    "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE" &
-    CURSOR_PID=$!
-    
-    # Wait for the process or timeout
-    TIMEOUT_REACHED=false
-    for i in $(seq 1 $TIMEOUT_SECONDS); do
-        if ! kill -0 $CURSOR_PID 2>/dev/null; then
-            # Process finished
-            set +e
-            wait $CURSOR_PID
-            CURSOR_EXIT_CODE=$?
-            set -e
-            break
+if [ "$REVIEW_TOOL" = "cursor" ]; then
+    # Run Cursor Agent
+    if command -v gtimeout &> /dev/null; then
+        # Use gtimeout from coreutils if available
+        if gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" agent --print --output-format json "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE"; then
+            REVIEW_EXIT_CODE=0
+        else
+            REVIEW_EXIT_CODE=$?
         fi
-        sleep 1
+    else
+        # Bash-based timeout implementation for macOS
+        "$REVIEW_TOOL_PATH" agent --print --output-format json "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" &
+        REVIEW_PID=$!
+        
+        # Wait for the process or timeout
+        for i in $(seq 1 $TIMEOUT_SECONDS); do
+            if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                # Process finished
+                set +e
+                wait $REVIEW_PID
+                REVIEW_EXIT_CODE=$?
+                set -e
+                break
+            fi
+            sleep 1
+        done
+        
+        # Check if process is still running (timeout reached)
+        if kill -0 $REVIEW_PID 2>/dev/null; then
+            kill $REVIEW_PID 2>/dev/null || true
+            set +e
+            wait $REVIEW_PID 2>/dev/null || true
+            set -e
+            REVIEW_EXIT_CODE=124
+        fi
+    fi
+elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+    # Run CodeRabbit - try multiple command formats
+    # CodeRabbit CLI format may vary, so we try different approaches
+    REVIEW_EXIT_CODE=1
+    
+    # Try format 1: coderabbit review with diff file (--file or --diff-file or --diff)
+    for file_flag in "--file" "--diff-file" "--diff" "-f" "-d"; do
+        if command -v gtimeout &> /dev/null; then
+            if gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review $file_flag "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1; then
+                REVIEW_EXIT_CODE=0
+                break
+            fi
+        else
+            "$REVIEW_TOOL_PATH" review $file_flag "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1 &
+            REVIEW_PID=$!
+            
+            for i in $(seq 1 $TIMEOUT_SECONDS); do
+                if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                    set +e
+                    wait $REVIEW_PID
+                    REVIEW_EXIT_CODE=$?
+                    set -e
+                    break
+                fi
+                sleep 1
+            done
+            
+            if kill -0 $REVIEW_PID 2>/dev/null; then
+                kill $REVIEW_PID 2>/dev/null || true
+                set +e
+                wait $REVIEW_PID 2>/dev/null || true
+                set -e
+                REVIEW_EXIT_CODE=124
+            fi
+            
+            if [ $REVIEW_EXIT_CODE -eq 0 ]; then
+                break
+            fi
+        fi
     done
     
-    # Check if process is still running (timeout reached)
-    if kill -0 $CURSOR_PID 2>/dev/null; then
-        TIMEOUT_REACHED=true
-        kill $CURSOR_PID 2>/dev/null || true
-        set +e
-        wait $CURSOR_PID 2>/dev/null || true
-        set -e
-        CURSOR_EXIT_CODE=124
+    # Try format 2: coderabbit review with stdin (if format 1 failed)
+    if [ $REVIEW_EXIT_CODE -ne 0 ] && [ $REVIEW_EXIT_CODE -ne 124 ]; then
+        if command -v gtimeout &> /dev/null; then
+            if cat "$TEMP_DIFF_FILE" | gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1; then
+                REVIEW_EXIT_CODE=0
+            fi
+        else
+            cat "$TEMP_DIFF_FILE" | "$REVIEW_TOOL_PATH" review > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1 &
+            REVIEW_PID=$!
+            
+            for i in $(seq 1 $TIMEOUT_SECONDS); do
+                if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                    set +e
+                    wait $REVIEW_PID
+                    REVIEW_EXIT_CODE=$?
+                    set -e
+                    break
+                fi
+                sleep 1
+            done
+            
+            if kill -0 $REVIEW_PID 2>/dev/null; then
+                kill $REVIEW_PID 2>/dev/null || true
+                set +e
+                wait $REVIEW_PID 2>/dev/null || true
+                set -e
+                REVIEW_EXIT_CODE=124
+            fi
+        fi
     fi
+    
+    # Try format 3: coderabbit review in git context (if previous formats failed)
+    # CodeRabbit might need to be run in the git repo directory
+    if [ $REVIEW_EXIT_CODE -ne 0 ] && [ $REVIEW_EXIT_CODE -ne 124 ]; then
+        if command -v gtimeout &> /dev/null; then
+            if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1); then
+                REVIEW_EXIT_CODE=0
+            fi
+        else
+            (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1) &
+            REVIEW_PID=$!
+            
+            for i in $(seq 1 $TIMEOUT_SECONDS); do
+                if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                    set +e
+                    wait $REVIEW_PID
+                    REVIEW_EXIT_CODE=$?
+                    set -e
+                    break
+                fi
+                sleep 1
+            done
+            
+            if kill -0 $REVIEW_PID 2>/dev/null; then
+                kill $REVIEW_PID 2>/dev/null || true
+                set +e
+                wait $REVIEW_PID 2>/dev/null || true
+                set -e
+                REVIEW_EXIT_CODE=124
+            fi
+        fi
+    fi
+    
+    # Note: CodeRabbit may have different output format than Cursor
+    # The JSON parsing will handle both formats, or we'll skip review if parsing fails
 fi
 
 # Clean up temp diff file
 rm -f "$TEMP_DIFF_FILE"
 
-if [ $CURSOR_EXIT_CODE -eq 124 ]; then
-    echo -e "${YELLOW}⚠️  Cursor Agent review timed out after $TIMEOUT_SECONDS seconds${NC}"
+if [ $REVIEW_EXIT_CODE -eq 124 ]; then
+    TOOL_NAME="AI review tool"
+    if [ "$REVIEW_TOOL" = "cursor" ]; then
+        TOOL_NAME="Cursor Agent"
+    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        TOOL_NAME="CodeRabbit"
+    fi
+    echo -e "${YELLOW}⚠️  $TOOL_NAME review timed out after $TIMEOUT_SECONDS seconds${NC}"
     echo -e "${YELLOW}⚠️  Proceeding without AI review...${NC}\n"
-    rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+    rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
     exit 0
 fi
 
-if [ $CURSOR_EXIT_CODE -ne 0 ]; then
-    echo -e "${YELLOW}⚠️  Cursor Agent review failed with exit code $CURSOR_EXIT_CODE${NC}"
-    if [ -s "$CURSOR_ERROR_FILE" ]; then
+if [ $REVIEW_EXIT_CODE -ne 0 ]; then
+    TOOL_NAME="AI review tool"
+    if [ "$REVIEW_TOOL" = "cursor" ]; then
+        TOOL_NAME="Cursor Agent"
+    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        TOOL_NAME="CodeRabbit"
+    fi
+    echo -e "${YELLOW}⚠️  $TOOL_NAME review failed with exit code $REVIEW_EXIT_CODE${NC}"
+    if [ -s "$REVIEW_ERROR_FILE" ]; then
         echo -e "${YELLOW}Error output:${NC}"
-        cat "$CURSOR_ERROR_FILE"
+        cat "$REVIEW_ERROR_FILE"
     fi
     echo -e "${YELLOW}⚠️  Proceeding without AI review...${NC}\n"
-    rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+    rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
     exit 0
 fi
 
-# Parse the Cursor Agent output
-if [ -s "$CURSOR_OUTPUT_FILE" ]; then
-    REVIEW_RESULT=$(cat "$CURSOR_OUTPUT_FILE")
+# Parse the AI review tool output
+if [ -s "$REVIEW_OUTPUT_FILE" ]; then
+    REVIEW_RESULT=$(cat "$REVIEW_OUTPUT_FILE")
     
-    # DEBUG: Show the raw agent output
+    # DEBUG: Show the raw tool output
+    TOOL_NAME="AI review tool"
+    if [ "$REVIEW_TOOL" = "cursor" ]; then
+        TOOL_NAME="Cursor Agent"
+    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        TOOL_NAME="CodeRabbit"
+    fi
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}🤖 Cursor Agent Raw Response (DEBUG):${NC}"
+    echo -e "${BLUE}🤖 $TOOL_NAME Raw Response (DEBUG):${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo "$REVIEW_RESULT"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
@@ -688,7 +1014,7 @@ if [ -s "$CURSOR_OUTPUT_FILE" ]; then
     # Extract JSON from the response
     # The response is wrapped in a result object, and the actual JSON is in a code block
     # Pass file path via environment variable
-    JSON_RESULT=$(CURSOR_OUTPUT_FILE="$CURSOR_OUTPUT_FILE" python3 << 'PYTHON_EOF'
+    JSON_RESULT=$(REVIEW_OUTPUT_FILE="$REVIEW_OUTPUT_FILE" python3 << 'PYTHON_EOF'
 import sys, json
 import re
 import os
@@ -773,9 +1099,9 @@ def extract_from_code_block(text):
 
 try:
     # Read from the file in environment variable, or stdin
-    cursor_file = os.environ.get('CURSOR_OUTPUT_FILE')
-    if cursor_file and os.path.exists(cursor_file):
-        with open(cursor_file, 'r', encoding='utf-8') as f:
+    review_file = os.environ.get('REVIEW_OUTPUT_FILE')
+    if review_file and os.path.exists(review_file):
+        with open(review_file, 'r', encoding='utf-8') as f:
             input_data = f.read()
     else:
         input_data = sys.stdin.read()
@@ -844,9 +1170,15 @@ PYTHON_EOF
     
     # Check if we got valid JSON
     if ! echo "$JSON_RESULT" | python3 -m json.tool >/dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️  Could not parse Cursor Agent response as JSON${NC}"
+        TOOL_NAME="AI review tool"
+        if [ "$REVIEW_TOOL" = "cursor" ]; then
+            TOOL_NAME="Cursor Agent"
+        elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+            TOOL_NAME="CodeRabbit"
+        fi
+        echo -e "${YELLOW}⚠️  Could not parse $TOOL_NAME response as JSON${NC}"
         echo -e "${YELLOW}⚠️  Proceeding without AI review...${NC}\n"
-        rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+        rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
         exit 0
     fi
     
@@ -909,7 +1241,7 @@ print(f\"Summary: {data.get('summary', 'Issues found in your changes')}\")"
         echo -e "${RED}Please fix these issues before pushing.${NC}"
         echo -e "${YELLOW}To bypass this check (not recommended), use: git push --no-verify${NC}"
         
-        rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+        rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
         exit 1
     else
         # Even if flag says no issues, check if there are actually issues in the array
@@ -945,16 +1277,28 @@ print(f\"Summary: {data.get('summary', 'Issues found in your changes')}\")"
             echo -e "${RED}Please fix these issues before committing.${NC}"
             echo -e "${YELLOW}To bypass this check (not recommended), use: git commit --no-verify${NC}"
             
-            rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+            rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
             exit 1
         else
-            echo -e "${GREEN}✓ Cursor Agent review passed - no blocking issues found${NC}"
+            TOOL_NAME="AI review tool"
+            if [ "$REVIEW_TOOL" = "cursor" ]; then
+                TOOL_NAME="Cursor Agent"
+            elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                TOOL_NAME="CodeRabbit"
+            fi
+            echo -e "${GREEN}✓ $TOOL_NAME review passed - no blocking issues found${NC}"
             SUMMARY=$(echo "$JSON_RESULT" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('summary', 'No issues found'))" 2>/dev/null || echo "Review completed")
             echo -e "${GREEN}  Summary: $SUMMARY${NC}\n"
         fi
     fi
 else
-    echo -e "${YELLOW}⚠️  No output from Cursor Agent${NC}"
+    TOOL_NAME="AI review tool"
+    if [ "$REVIEW_TOOL" = "cursor" ]; then
+        TOOL_NAME="Cursor Agent"
+    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        TOOL_NAME="CodeRabbit"
+    fi
+    echo -e "${YELLOW}⚠️  No output from $TOOL_NAME${NC}"
     echo -e "${YELLOW}⚠️  Proceeding without AI review...${NC}\n"
 fi
 
@@ -965,7 +1309,7 @@ if [ "${ANDROID_LINT_FAILED:-false}" = true ] || [ "${ANDROID_TEST_FAILED:-false
 fi
 
 # Cleanup
-rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
 
 # ============================================
 # All checks passed
@@ -983,46 +1327,15 @@ chmod +x "$PRE_PUSH_HOOK"
 echo -e "${GREEN}✓ Pre-push hook installed successfully${NC}"
 echo -e "${GREEN}  Location: $PRE_PUSH_HOOK${NC}\n"
 
-# Setup Cursor Agent if available
-if [ "$CURSOR_AVAILABLE" = true ] && [ -n "$CURSOR_PATH" ]; then
-    echo -e "${BLUE}🤖 Checking Cursor Agent authentication...${NC}"
-
-    POST_STATUS_OUTPUT=$("$CURSOR_PATH" agent status 2>&1) || POST_STATUS_EXIT=$?
-    POST_STATUS_EXIT=${POST_STATUS_EXIT:-0}
-    if echo "$POST_STATUS_OUTPUT" | grep -Eqi "command not found|No such file|not recognized|unknown command|unknown subcommand|is not a valid command"; then
-        echo -e "${YELLOW}⚠️  Cursor CLI/Agent command not available${NC}"
-        echo -e "${YELLOW}  Please install or update Cursor so that 'cursor agent' works.${NC}"
-        echo -e "${YELLOW}  Status output:${NC}"
-        echo "$POST_STATUS_OUTPUT"
-        echo ""
-    elif echo "$POST_STATUS_OUTPUT" | grep -qi "not logged in"; then
-        echo -e "${YELLOW}⚠️  Cursor Agent is not authenticated${NC}"
-        echo -e "${YELLOW}  Status output:${NC}"
-        echo "$POST_STATUS_OUTPUT"
-        echo ""
-        
-        read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            "$CURSOR_PATH" agent login
-            echo ""
-        fi
-    elif [ $POST_STATUS_EXIT -eq 0 ]; then
-        echo -e "${GREEN}✓ Cursor Agent is authenticated${NC}\n"
-    else
-        echo -e "${YELLOW}⚠️  Cursor Agent is not authenticated${NC}"
-        echo -e "${YELLOW}  The hook will work but AI review will be skipped${NC}"
-        echo -e "${YELLOW}  Status output:${NC}"
-        echo "$POST_STATUS_OUTPUT"
-        echo ""
-        
-        read -p "Do you want to authenticate Cursor Agent now? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            "$CURSOR_PATH" agent login
-            echo ""
-        fi
+# Final verification of selected tool
+if [ -n "$SELECTED_TOOL" ] && [ -n "$SELECTED_TOOL_PATH" ]; then
+    TOOL_NAME="AI review tool"
+    if [ "$SELECTED_TOOL" = "cursor" ]; then
+        TOOL_NAME="Cursor Agent"
+    elif [ "$SELECTED_TOOL" = "coderabbit" ]; then
+        TOOL_NAME="CodeRabbit"
     fi
+    echo -e "${GREEN}✓ $TOOL_NAME configured for code reviews${NC}\n"
 fi
 
 # Final instructions
@@ -1064,7 +1377,10 @@ PRE_COMMIT_START
 
 echo "SWIFTLINT_PATH=\"$SWIFTLINT_PATH\"" >> "$PRE_COMMIT_HOOK"
 echo "PROJECT_ROOT=\"$GIT_ROOT\"" >> "$PRE_COMMIT_HOOK"
+echo "REVIEW_TOOL=\"$SELECTED_TOOL\"" >> "$PRE_COMMIT_HOOK"
+echo "REVIEW_TOOL_PATH=\"$SELECTED_TOOL_PATH\"" >> "$PRE_COMMIT_HOOK"
 echo "CURSOR_CLI=\"$CURSOR_PATH\"" >> "$PRE_COMMIT_HOOK"
+echo "CODERABBIT_CLI=\"$CODERABBIT_PATH\"" >> "$PRE_COMMIT_HOOK"
 echo "IS_IOS_PROJECT=\"$IS_IOS_PROJECT\"" >> "$PRE_COMMIT_HOOK"
 echo "IS_ANDROID_PROJECT=\"$IS_ANDROID_PROJECT\"" >> "$PRE_COMMIT_HOOK"
 echo "ANDROID_GRADLEW=\"$ANDROID_GRADLEW\"" >> "$PRE_COMMIT_HOOK"
@@ -1225,12 +1541,67 @@ elif [ -n "$STAGED_ANDROID_FILES" ]; then
 fi
 
 # ============================================
-# Step 2: Run Cursor Agent Code Review (warnings only)
+# Step 2: Run AI Code Review (warnings only)
 # ============================================
-if [ -n "$CURSOR_CLI" ] && [ -f "$CURSOR_CLI" ]; then
-    # Check if Cursor Agent is logged in
-    if "$CURSOR_CLI" agent status >/dev/null 2>&1; then
-        echo -e "${BLUE}🤖 Running Cursor Agent code review (warnings only)...${NC}"
+# Determine which tool to use (runtime fallback if not set)
+if [ -z "$REVIEW_TOOL" ]; then
+    # Try to detect at runtime
+    if [ -n "$REVIEW_TOOL_PATH" ] && [ -f "$REVIEW_TOOL_PATH" ]; then
+        if echo "$REVIEW_TOOL_PATH" | grep -qi "cursor"; then
+            REVIEW_TOOL="cursor"
+        elif echo "$REVIEW_TOOL_PATH" | grep -qi "coderabbit"; then
+            REVIEW_TOOL="coderabbit"
+        fi
+    fi
+    
+    # Fallback: try to find available tool
+    if [ -z "$REVIEW_TOOL" ]; then
+        # Check CodeRabbit authentication by parsing output
+        if command -v coderabbit &> /dev/null; then
+            CODERABBIT_AUTH_OUTPUT=$(coderabbit auth status 2>&1) || CODERABBIT_AUTH_EXIT=$?
+            CODERABBIT_AUTH_EXIT=${CODERABBIT_AUTH_EXIT:-0}
+            if echo "$CODERABBIT_AUTH_OUTPUT" | grep -qiE "authenticated.*yes|logged in.*yes|✓.*authenticated|successfully authenticated" || \
+               ([ $CODERABBIT_AUTH_EXIT -eq 0 ] && ! echo "$CODERABBIT_AUTH_OUTPUT" | grep -qi "not logged in\|not authenticated"); then
+                REVIEW_TOOL="coderabbit"
+                REVIEW_TOOL_PATH=$(which coderabbit)
+            fi
+        fi
+        # Check Cursor if CodeRabbit not available
+        if [ -z "$REVIEW_TOOL" ] && [ -n "$CURSOR_CLI" ] && [ -f "$CURSOR_CLI" ] && "$CURSOR_CLI" agent status >/dev/null 2>&1; then
+            REVIEW_TOOL="cursor"
+            REVIEW_TOOL_PATH="$CURSOR_CLI"
+        fi
+    fi
+fi
+
+if [ -n "$REVIEW_TOOL" ] && [ -n "$REVIEW_TOOL_PATH" ] && [ -f "$REVIEW_TOOL_PATH" ]; then
+    # Check if tool is authenticated
+    TOOL_AUTHENTICATED=false
+    if [ "$REVIEW_TOOL" = "cursor" ]; then
+        if "$REVIEW_TOOL_PATH" agent status >/dev/null 2>&1; then
+            TOOL_AUTHENTICATED=true
+        fi
+    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        # Check authentication by parsing output (auth status may return non-zero even when authenticated)
+        CODERABBIT_AUTH_OUTPUT=$("$REVIEW_TOOL_PATH" auth status 2>&1) || CODERABBIT_AUTH_EXIT=$?
+        CODERABBIT_AUTH_EXIT=${CODERABBIT_AUTH_EXIT:-0}
+        
+        # Check if output indicates authentication (look for success indicators)
+        # CodeRabbit shows "Not logged in" when not authenticated, or success messages when authenticated
+        if echo "$CODERABBIT_AUTH_OUTPUT" | grep -qiE "authenticated.*yes|logged in.*yes|✓.*authenticated|successfully authenticated" || \
+           ([ $CODERABBIT_AUTH_EXIT -eq 0 ] && ! echo "$CODERABBIT_AUTH_OUTPUT" | grep -qi "not logged in\|not authenticated"); then
+            TOOL_AUTHENTICATED=true
+        fi
+    fi
+    
+    if [ "$TOOL_AUTHENTICATED" = true ]; then
+        TOOL_NAME="AI review tool"
+        if [ "$REVIEW_TOOL" = "cursor" ]; then
+            TOOL_NAME="Cursor Agent"
+        elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+            TOOL_NAME="CodeRabbit"
+        fi
+        echo -e "${BLUE}🤖 Running $TOOL_NAME code review (warnings only)...${NC}"
         
         # Get the diff of staged changes
         STAGED_DIFF=$(git diff --cached)
@@ -1289,73 +1660,189 @@ $REVIEW_DIFF
 
 Respond ONLY with the JSON format above, no additional text."
             
-            # Run Cursor Agent in non-interactive mode
-            CURSOR_OUTPUT_FILE=$(mktemp)
-            CURSOR_ERROR_FILE=$(mktemp)
+            # Run AI review tool in non-interactive mode
+            REVIEW_OUTPUT_FILE=$(mktemp)
+            REVIEW_ERROR_FILE=$(mktemp)
             
             echo -e "${BLUE}Analyzing code changes... (this may take a moment)${NC}"
             
             # macOS-compatible timeout: try gtimeout (coreutils), then use bash-based timeout
-            TIMEOUT_SECONDS=60
-            CURSOR_EXIT_CODE=0
+            TIMEOUT_SECONDS=300
+            REVIEW_EXIT_CODE=0
             
-            if command -v gtimeout &> /dev/null; then
-                if gtimeout ${TIMEOUT_SECONDS}s "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE"; then
-                    CURSOR_EXIT_CODE=0
-                else
-                    CURSOR_EXIT_CODE=$?
-                fi
-            else
-                # Bash-based timeout implementation for macOS
-                "$CURSOR_CLI" agent --print --output-format json "$REVIEW_PROMPT" > "$CURSOR_OUTPUT_FILE" 2> "$CURSOR_ERROR_FILE" &
-                CURSOR_PID=$!
-                
-                TIMEOUT_REACHED=false
-                for i in $(seq 1 $TIMEOUT_SECONDS); do
-                    if ! kill -0 $CURSOR_PID 2>/dev/null; then
-                        set +e
-                        wait $CURSOR_PID
-                        CURSOR_EXIT_CODE=$?
-                        set -e
-                        break
+            if [ "$REVIEW_TOOL" = "cursor" ]; then
+                # Run Cursor Agent
+                if command -v gtimeout &> /dev/null; then
+                    if gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" agent --print --output-format json "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE"; then
+                        REVIEW_EXIT_CODE=0
+                    else
+                        REVIEW_EXIT_CODE=$?
                     fi
-                    sleep 1
-                done
+                else
+                    # Bash-based timeout implementation for macOS
+                    "$REVIEW_TOOL_PATH" agent --print --output-format json "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" &
+                    REVIEW_PID=$!
+                    
+                    for i in $(seq 1 $TIMEOUT_SECONDS); do
+                        if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                            set +e
+                            wait $REVIEW_PID
+                            REVIEW_EXIT_CODE=$?
+                            set -e
+                            break
+                        fi
+                        sleep 1
+                    done
+                    
+                    if kill -0 $REVIEW_PID 2>/dev/null; then
+                        kill $REVIEW_PID 2>/dev/null || true
+                        set +e
+                        wait $REVIEW_PID 2>/dev/null || true
+                        set -e
+                        REVIEW_EXIT_CODE=124
+                    fi
+                fi
+            elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                # Run CodeRabbit - Use --plain flag for non-interactive output and --type uncommitted for staged changes
+                REVIEW_EXIT_CODE=1
                 
-                if kill -0 $CURSOR_PID 2>/dev/null; then
-                    TIMEOUT_REACHED=true
-                    kill $CURSOR_PID 2>/dev/null || true
-                    set +e
-                    wait $CURSOR_PID 2>/dev/null || true
-                    set -e
-                    CURSOR_EXIT_CODE=124
+                # Try format 1: Run in git repo context with --plain and --type uncommitted (for staged changes)
+                # Capture both stdout and stderr since CodeRabbit might output review to either
+                if command -v gtimeout &> /dev/null; then
+                    if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review --plain --type uncommitted > "$REVIEW_OUTPUT_FILE" 2>&1); then
+                        REVIEW_EXIT_CODE=0
+                    else
+                        REVIEW_EXIT_CODE=$?
+                    fi
+                else
+                    (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review --plain --type uncommitted > "$REVIEW_OUTPUT_FILE" 2>&1) &
+                    REVIEW_PID=$!
+                    
+                    for i in $(seq 1 $TIMEOUT_SECONDS); do
+                        if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                            set +e
+                            wait $REVIEW_PID
+                            REVIEW_EXIT_CODE=$?
+                            set -e
+                            break
+                        fi
+                        sleep 1
+                    done
+                    
+                    if kill -0 $REVIEW_PID 2>/dev/null; then
+                        kill $REVIEW_PID 2>/dev/null || true
+                        set +e
+                        wait $REVIEW_PID 2>/dev/null || true
+                        set -e
+                        REVIEW_EXIT_CODE=124
+                    fi
+                fi
+                
+                # Try format 2: Run with --plain but without --type (if format 1 failed)
+                # Capture both stdout and stderr since CodeRabbit might output review to either
+                if [ $REVIEW_EXIT_CODE -ne 0 ] && [ $REVIEW_EXIT_CODE -ne 124 ]; then
+                    if command -v gtimeout &> /dev/null; then
+                        if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review --plain > "$REVIEW_OUTPUT_FILE" 2>&1); then
+                            REVIEW_EXIT_CODE=0
+                        fi
+                    else
+                        (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review --plain > "$REVIEW_OUTPUT_FILE" 2>&1) &
+                        REVIEW_PID=$!
+                        
+                        for i in $(seq 1 $TIMEOUT_SECONDS); do
+                            if ! kill -0 $REVIEW_PID 2>/dev/null; then
+                                set +e
+                                wait $REVIEW_PID
+                                REVIEW_EXIT_CODE=$?
+                                set -e
+                                break
+                            fi
+                            sleep 1
+                        done
+                        
+                        if kill -0 $REVIEW_PID 2>/dev/null; then
+                            kill $REVIEW_PID 2>/dev/null || true
+                            set +e
+                            wait $REVIEW_PID 2>/dev/null || true
+                            set -e
+                            REVIEW_EXIT_CODE=124
+                        fi
+                    fi
                 fi
             fi
             
             # Clean up temp diff file
             rm -f "$TEMP_DIFF_FILE"
             
-            if [ $CURSOR_EXIT_CODE -eq 124 ]; then
-                echo -e "${YELLOW}⚠️  Cursor Agent review timed out after $TIMEOUT_SECONDS seconds${NC}"
+            TOOL_NAME="AI review tool"
+            if [ "$REVIEW_TOOL" = "cursor" ]; then
+                TOOL_NAME="Cursor Agent"
+            elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                TOOL_NAME="CodeRabbit"
+            fi
+            
+            if [ $REVIEW_EXIT_CODE -eq 124 ]; then
+                echo -e "${YELLOW}⚠️  $TOOL_NAME review timed out after $TIMEOUT_SECONDS seconds${NC}"
                 echo -e "${YELLOW}⚠️  Skipping AI review...${NC}\n"
-                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
-            elif [ $CURSOR_EXIT_CODE -ne 0 ]; then
-                echo -e "${YELLOW}⚠️  Cursor Agent review failed (warnings only - commit will proceed)${NC}"
-                echo -e "${YELLOW}  Exit code: $CURSOR_EXIT_CODE${NC}"
-                if [ -s "$CURSOR_ERROR_FILE" ]; then
+                rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+            elif [ $REVIEW_EXIT_CODE -ne 0 ]; then
+                echo -e "${YELLOW}⚠️  $TOOL_NAME review failed (warnings only - commit will proceed)${NC}"
+                echo -e "${YELLOW}  Exit code: $REVIEW_EXIT_CODE${NC}"
+                if [ -s "$REVIEW_ERROR_FILE" ]; then
                     echo -e "${YELLOW}  Error output:${NC}"
-                    cat "$CURSOR_ERROR_FILE"
+                    cat "$REVIEW_ERROR_FILE"
                 fi
-                if [ -s "$CURSOR_OUTPUT_FILE" ]; then
-                    echo -e "${YELLOW}  Partial response:${NC}"
-                    head -n 20 "$CURSOR_OUTPUT_FILE"
+                if [ -s "$REVIEW_OUTPUT_FILE" ]; then
+                    echo -e "${YELLOW}  Output (may contain review results):${NC}"
+                    cat "$REVIEW_OUTPUT_FILE"
+                    echo ""
                 fi
                 echo ""
-                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
-            elif [ -s "$CURSOR_OUTPUT_FILE" ]; then
-                # Parse the Cursor Agent output using the same extraction logic as pre-push
-                REVIEW_RESULT=$(cat "$CURSOR_OUTPUT_FILE")
-                JSON_RESULT=$(CURSOR_OUTPUT_FILE="$CURSOR_OUTPUT_FILE" python3 << 'PYTHON_EOF'
+                rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+            elif [ -s "$REVIEW_OUTPUT_FILE" ]; then
+                # Show raw output for debugging (especially for CodeRabbit which might output plain text)
+                REVIEW_RESULT=$(cat "$REVIEW_OUTPUT_FILE")
+                
+                # For CodeRabbit, it outputs plain text (not JSON)
+                # Always show the full review output so users can see the comments
+                if [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                    # Trim whitespace and check if there's actual content
+                    REVIEW_RESULT_TRIMMED=$(echo "$REVIEW_RESULT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    
+                    if [ -n "$REVIEW_RESULT_TRIMMED" ]; then
+                        # Filter out just status messages to see if there's actual review content
+                        # Status messages typically include: "Starting", "Connecting", "Setting up", "Analyzing", "Reviewing", "Review completed"
+                        REVIEW_CONTENT=$(echo "$REVIEW_RESULT" | grep -v -iE "^(Starting|Connecting|Setting up|Analyzing|Reviewing|Review completed)" | grep -v "^$" || echo "$REVIEW_RESULT")
+                        
+                        # Check if there's actual review content beyond status messages
+                        if [ -n "$(echo "$REVIEW_CONTENT" | tr -d '[:space:]')" ] && [ "$REVIEW_CONTENT" != "$REVIEW_RESULT" ]; then
+                            # Has review content beyond status messages
+                            echo -e "${YELLOW}⚠️  CodeRabbit Review Results (warnings only - commit will proceed):${NC}\n"
+                            echo "$REVIEW_CONTENT"
+                            echo ""
+                            echo -e "${YELLOW}💡 Tip: Consider addressing these review comments before committing${NC}\n"
+                        elif echo "$REVIEW_RESULT_TRIMMED" | grep -qiE "warning|error|issue|problem|suggestion|fix|critical|high|medium|🔴|🟠|🟡|⚠️|❌|recommend|consider|should|improve"; then
+                            # Contains review keywords - show full output
+                            echo -e "${YELLOW}⚠️  CodeRabbit Review Results (warnings only - commit will proceed):${NC}\n"
+                            echo "$REVIEW_RESULT"
+                            echo ""
+                            echo -e "${YELLOW}💡 Tip: Consider addressing these review comments before committing${NC}\n"
+                        else
+                            # Show full output anyway - user should see what CodeRabbit said
+                            echo -e "${BLUE}📋 CodeRabbit Review Output:${NC}\n"
+                            echo "$REVIEW_RESULT"
+                            echo ""
+                            echo -e "${GREEN}✓ No critical issues detected in review output${NC}\n"
+                        fi
+                        rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+                    else
+                        # Empty output
+                        echo -e "${GREEN}✓ CodeRabbit review completed - no output received${NC}\n"
+                        rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+                    fi
+                else
+                    # Parse the AI review tool output using the same extraction logic as pre-push (for Cursor)
+                JSON_RESULT=$(REVIEW_OUTPUT_FILE="$REVIEW_OUTPUT_FILE" python3 << 'PYTHON_EOF'
 import sys, json
 import os
 import re
@@ -1428,9 +1915,9 @@ def extract_from_code_block(text):
     return None
 
 try:
-    cursor_file = os.environ.get('CURSOR_OUTPUT_FILE')
-    if cursor_file and os.path.exists(cursor_file):
-        with open(cursor_file, 'r', encoding='utf-8') as f:
+    review_file = os.environ.get('REVIEW_OUTPUT_FILE')
+    if review_file and os.path.exists(review_file):
+        with open(review_file, 'r', encoding='utf-8') as f:
             input_data = f.read()
     else:
         input_data = sys.stdin.read()
@@ -1487,52 +1974,139 @@ PYTHON_EOF
                 
                 # Check if we got valid JSON
                 if echo "$JSON_RESULT" | python3 -m json.tool >/dev/null 2>&1; then
-                    # Extract issues
-                    ISSUE_COUNT=$(echo "$JSON_RESULT" | python3 -c "import sys, json; data = json.load(sys.stdin); issues = data.get('critical_issues', []); print(len(issues) if isinstance(issues, list) else 0)" 2>/dev/null || echo "0")
-                    
-                    if [ "$ISSUE_COUNT" -gt 0 ]; then
-                        echo -e "${YELLOW}⚠️  Cursor Agent found issues (warnings only - commit will proceed):${NC}\n"
-                        echo "$JSON_RESULT" | python3 -c "
+                    # Extract issues - also check has_critical_issues flag
+                    ISSUE_DATA=$(echo "$JSON_RESULT" | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-for i, issue in enumerate(data.get('critical_issues', []), 1):
-    severity = issue.get('severity', 'medium').lower()
-    if severity == 'critical':
-        severity_marker = '🔴 CRITICAL'
-    elif severity == 'high':
-        severity_marker = '🟠 HIGH'
-    else:
-        severity_marker = '🟡 MEDIUM'
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('critical_issues', [])
+    issue_count = len(issues) if isinstance(issues, list) else 0
+    has_flag = data.get('has_critical_issues', False)
+    # If flag is true but array is empty, still count as having issues
+    if has_flag and issue_count == 0:
+        issue_count = 1
+    print(f\"{issue_count}|{has_flag}\")
+except Exception as e:
+    print('0|false', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null || echo "0|false")
+                    
+                    ISSUE_COUNT=$(echo "$ISSUE_DATA" | cut -d'|' -f1)
+                    HAS_FLAG=$(echo "$ISSUE_DATA" | cut -d'|' -f2)
+                    
+                    if [ "$ISSUE_COUNT" -gt 0 ] || [ "$HAS_FLAG" = "true" ]; then
+                        TOOL_NAME="AI review tool"
+                        if [ "$REVIEW_TOOL" = "cursor" ]; then
+                            TOOL_NAME="Cursor Agent"
+                        elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                            TOOL_NAME="CodeRabbit"
+                        fi
+                        echo -e "${YELLOW}⚠️  $TOOL_NAME found issues (warnings only - commit will proceed):${NC}\n"
+                        
+                        # Display issues
+                        DISPLAY_OUTPUT=$(echo "$JSON_RESULT" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    issues = data.get('critical_issues', [])
     
-    print(f\"Issue #{i} [{severity_marker}]:\")
-    print(f\"  File: {issue.get('file', 'N/A')}\")
-    if 'line' in issue:
-        print(f\"  Line: {issue['line']}\")
-    print(f\"  Issue: {issue.get('issue', 'N/A')}\")
-    if 'suggestion' in issue and issue['suggestion']:
-        print(f\"  Suggestion: {issue['suggestion']}\")
-    print()
-summary = data.get('summary', 'Issues found')
-print(f\"Summary: {summary}\")"
+    if isinstance(issues, list) and len(issues) > 0:
+        for i, issue in enumerate(issues, 1):
+            severity = issue.get('severity', 'medium').lower()
+            if severity == 'critical':
+                severity_marker = '🔴 CRITICAL'
+            elif severity == 'high':
+                severity_marker = '🟠 HIGH'
+            else:
+                severity_marker = '🟡 MEDIUM'
+            
+            print(f\"Issue #{i} [{severity_marker}]:\")
+            print(f\"  File: {issue.get('file', 'N/A')}\")
+            if 'line' in issue:
+                print(f\"  Line: {issue['line']}\")
+            print(f\"  Issue: {issue.get('issue', 'N/A')}\")
+            if 'reason' in issue and issue['reason']:
+                print(f\"  Reason: {issue['reason']}\")
+            if 'suggestion' in issue and issue['suggestion']:
+                print(f\"  Suggestion: {issue['suggestion']}\")
+            print()
+    else:
+        # No issues in array but flag says there are issues - show summary
+        summary = data.get('summary', 'Issues were detected but details are not available')
+        print(f\"Note: {summary}\")
+        print(\"  (Issue details were not provided in the response)\")
+        print()
+    
+    summary = data.get('summary', 'Issues found')
+    if summary:
+        print(f\"Summary: {summary}\")
+except Exception as e:
+    print(f\"Error displaying issues: {e}\", file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+                        
+                        if [ -n "$DISPLAY_OUTPUT" ]; then
+                            echo "$DISPLAY_OUTPUT"
+                        else
+                            echo -e "${YELLOW}  (Issues were detected but could not be displayed)${NC}"
+                        fi
                         echo ""
                         echo -e "${YELLOW}💡 Tip: Consider fixing these issues before committing${NC}\n"
                     else
-                        echo -e "${GREEN}✓ Cursor Agent review passed - no issues found${NC}\n"
+                        TOOL_NAME="AI review tool"
+                        if [ "$REVIEW_TOOL" = "cursor" ]; then
+                            TOOL_NAME="Cursor Agent"
+                        elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                            TOOL_NAME="CodeRabbit"
+                        fi
+                        echo -e "${GREEN}✓ $TOOL_NAME review passed - no issues found${NC}\n"
                     fi
                 else
-                    echo -e "${YELLOW}⚠️  Could not parse Cursor Agent response${NC}\n"
+                    # JSON parsing failed - show raw output for debugging
+                    TOOL_NAME="AI review tool"
+                    if [ "$REVIEW_TOOL" = "cursor" ]; then
+                        TOOL_NAME="Cursor Agent"
+                    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                        TOOL_NAME="CodeRabbit"
+                    fi
+                    echo -e "${YELLOW}⚠️  Could not parse $TOOL_NAME response as JSON${NC}"
+                    echo -e "${BLUE}  Showing raw output for debugging:${NC}\n"
+                    if [ -n "$REVIEW_RESULT" ] && [ -n "$(echo "$REVIEW_RESULT" | tr -d '[:space:]')" ]; then
+                        echo "$REVIEW_RESULT"
+                        echo ""
+                    else
+                        echo -e "${YELLOW}  (Output was empty)${NC}\n"
+                    fi
+                    if [ -s "$REVIEW_ERROR_FILE" ]; then
+                        echo -e "${YELLOW}  Error output:${NC}"
+                        cat "$REVIEW_ERROR_FILE"
+                        echo ""
+                    fi
                 fi
                 
-                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+                rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+                fi
             else
-                echo -e "${YELLOW}⚠️  No output from Cursor Agent${NC}\n"
-                rm -f "$CURSOR_OUTPUT_FILE" "$CURSOR_ERROR_FILE"
+                TOOL_NAME="AI review tool"
+                if [ "$REVIEW_TOOL" = "cursor" ]; then
+                    TOOL_NAME="Cursor Agent"
+                elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                    TOOL_NAME="CodeRabbit"
+                fi
+                echo -e "${YELLOW}⚠️  No output from $TOOL_NAME${NC}\n"
+                rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
             fi
         else
-            echo -e "${YELLOW}⚠️  Cursor Agent is not logged in. Run 'cursor agent login' first.${NC}\n"
+            TOOL_NAME="AI review tool"
+            if [ "$REVIEW_TOOL" = "cursor" ]; then
+                TOOL_NAME="Cursor Agent"
+            elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+                TOOL_NAME="CodeRabbit"
+            fi
+            echo -e "${YELLOW}⚠️  $TOOL_NAME is not authenticated. Run authentication command first.${NC}\n"
         fi
     else
-        echo -e "${YELLOW}⚠️  Cursor CLI not found, skipping AI review${NC}\n"
+        echo -e "${YELLOW}⚠️  No AI review tool available, skipping AI review${NC}\n"
     fi
 fi
 
@@ -1559,7 +2133,13 @@ echo -e "  1. ✓ Runs SwiftLint on staged Swift files (if available)"
 echo -e "  2. ⚠️  Shows warnings but does NOT block commits\n"
 echo -e "${GREEN}Pre-push hook (strict):${NC}"
 echo -e "  1. ✓ Runs SwiftLint on Swift files being pushed (if available)"
-echo -e "  2. ✓ Uses Cursor AI to review code changes for critical issues"
+TOOL_NAME="AI tool"
+if [ "$SELECTED_TOOL" = "cursor" ]; then
+    TOOL_NAME="Cursor Agent"
+elif [ "$SELECTED_TOOL" = "coderabbit" ]; then
+    TOOL_NAME="CodeRabbit"
+fi
+echo -e "  2. ✓ Uses $TOOL_NAME to review code changes for critical issues"
 echo -e "  3. ✓ Blocks push if critical problems are found\n"
 
 echo -e "${BLUE}Usage:${NC}"

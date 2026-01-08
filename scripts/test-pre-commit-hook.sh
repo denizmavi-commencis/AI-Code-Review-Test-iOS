@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Test script for pre-push hook
-# This script tests the pre-push hook without actually pushing
+# Test script for pre-commit hook
+# This script tests the pre-commit hook by creating a test file and staging it
 
 set -e
 
@@ -13,100 +13,120 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║          Pre-Push Hook Test Script                        ║${NC}"
-echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
+echo -e "${BLUE}║          Pre-Commit Hook Test Script                      ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝\n"
 
 # Get the git root directory
 GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 
 if [ -z "$GIT_ROOT" ]; then
     echo -e "${RED}✗ Error: Not in a git repository${NC}"
-    exit 1
+    echo -e "${YELLOW}  Creating a temporary test repository...${NC}\n"
+    
+    # Create a temporary test repo
+    TEST_DIR=$(mktemp -d)
+    cd "$TEST_DIR"
+    git init
+    GIT_ROOT="$TEST_DIR"
+    echo -e "${GREEN}✓ Created test repository at: $TEST_DIR${NC}\n"
 fi
 
-PRE_PUSH_HOOK="$GIT_ROOT/.git/hooks/pre-push"
+PRE_COMMIT_HOOK="$GIT_ROOT/.git/hooks/pre-commit"
 
-# Check if pre-push hook exists
-if [ ! -f "$PRE_PUSH_HOOK" ]; then
-    echo -e "${RED}✗ Pre-push hook not found${NC}"
-    echo -e "${YELLOW}  Expected location: $PRE_PUSH_HOOK${NC}"
-    echo -e "${YELLOW}  Run: ./scripts/install-git-hooks.sh${NC}"
-    exit 1
+# Check if pre-commit hook exists
+if [ ! -f "$PRE_COMMIT_HOOK" ]; then
+    echo -e "${YELLOW}⚠️  Pre-commit hook not found${NC}"
+    echo -e "${YELLOW}  Expected location: $PRE_COMMIT_HOOK${NC}"
+    echo -e "${BLUE}  Installing hooks...${NC}\n"
+    
+    # Run the installation script
+    if [ -f "$(dirname "$0")/../scripts/install-git-hooks.sh" ]; then
+        bash "$(dirname "$0")/../scripts/install-git-hooks.sh" <<< "y"
+    else
+        echo -e "${RED}✗ Installation script not found${NC}"
+        exit 1
+    fi
+    
+    if [ ! -f "$PRE_COMMIT_HOOK" ]; then
+        echo -e "${RED}✗ Pre-commit hook still not found after installation${NC}"
+        exit 1
+    fi
 fi
 
 # Check if hook is executable
-if [ ! -x "$PRE_PUSH_HOOK" ]; then
-    echo -e "${RED}✗ Pre-push hook is not executable${NC}"
-    echo -e "${YELLOW}  Run: chmod +x $PRE_PUSH_HOOK${NC}"
-    exit 1
+if [ ! -x "$PRE_COMMIT_HOOK" ]; then
+    echo -e "${YELLOW}⚠️  Pre-commit hook is not executable${NC}"
+    echo -e "${BLUE}  Making it executable...${NC}"
+    chmod +x "$PRE_COMMIT_HOOK"
 fi
 
-echo -e "${GREEN}✓ Pre-push hook found and is executable${NC}\n"
+echo -e "${GREEN}✓ Pre-commit hook found and is executable${NC}\n"
 
-# Get current branch and remote info
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-REMOTE_NAME=$(git config branch."$CURRENT_BRANCH".remote || echo "origin")
-REMOTE_URL=$(git config remote."$REMOTE_NAME".url || echo "")
-LOCAL_REF="refs/heads/$CURRENT_BRANCH"
-LOCAL_SHA=$(git rev-parse HEAD)
+# Create a test file with code that should trigger warnings
+echo -e "${BLUE}📝 Creating test file with code that should trigger warnings...${NC}"
 
-# Try to get remote SHA
-REMOTE_REF="refs/heads/$CURRENT_BRANCH"
-REMOTE_SHA=$(git rev-parse "$REMOTE_NAME/$CURRENT_BRANCH" 2>/dev/null || echo "0000000000000000000000000000000000000000")
+TEST_FILE="$GIT_ROOT/test_file.swift"
+cat > "$TEST_FILE" << 'EOF'
+import Foundation
 
-# If no remote SHA, use merge base with main/master
-if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
-    REMOTE_SHA=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD origin/master 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "0000000000000000000000000000000000000000")
-fi
-
-echo -e "${BLUE}📋 Test Configuration:${NC}"
-echo -e "  Branch: ${GREEN}$CURRENT_BRANCH${NC}"
-echo -e "  Remote: ${GREEN}$REMOTE_NAME${NC}"
-echo -e "  Local SHA: ${GREEN}$LOCAL_SHA${NC}"
-echo -e "  Remote SHA: ${GREEN}$REMOTE_SHA${NC}\n"
-
-# Get files that would be pushed
-if [ "$REMOTE_SHA" != "0000000000000000000000000000000000000000" ]; then
-    PUSHED_FILES=$(git diff --name-only "$REMOTE_SHA".."$LOCAL_SHA" || true)
-    if [ -z "$PUSHED_FILES" ]; then
-        echo -e "${YELLOW}⚠️  No changes to push (local and remote are in sync)${NC}\n"
-        echo -e "${BLUE}Test options:${NC}"
-        echo -e "  1. Make some changes and commit them"
-        echo -e "  2. The hook will skip checks if there are no changes\n"
-        exit 0
-    fi
+class TestClass {
+    var optionalValue: String?
     
-    echo -e "${BLUE}📝 Files that would be pushed:${NC}"
-    echo "$PUSHED_FILES"
-    echo ""
-else
-    echo -e "${YELLOW}⚠️  No remote reference found (first push to new branch)${NC}"
-    echo -e "${YELLOW}  The hook will skip checks for first push${NC}\n"
-    exit 0
-fi
+    func badMethod() {
+        // Force unwrapping - should trigger warning
+        let value = optionalValue!
+        
+        // Another force unwrap
+        let array = [1, 2, 3]
+        let first = array.first!
+        
+        print(value)
+        print(first)
+    }
+    
+    func anotherBadMethod() {
+        // Potential crash
+        let dict = ["key": "value"]
+        let value = dict["nonexistent"]!
+    }
+}
+EOF
 
-# Run the pre-push hook with simulated arguments
-echo -e "${BLUE}🧪 Running pre-push hook...${NC}"
+echo -e "${GREEN}✓ Created test file: $TEST_FILE${NC}\n"
+
+# Stage the file
+echo -e "${BLUE}📦 Staging test file...${NC}"
+cd "$GIT_ROOT"
+git add "$TEST_FILE" 2>/dev/null || git add "test_file.swift"
+echo -e "${GREEN}✓ File staged${NC}\n"
+
+# Run the pre-commit hook
+echo -e "${BLUE}🧪 Running pre-commit hook...${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
 
-# Pre-push hook arguments: remote_name remote_url local_ref local_sha remote_ref remote_sha
-if "$PRE_PUSH_HOOK" "$REMOTE_NAME" "$REMOTE_URL" "$LOCAL_REF" "$LOCAL_SHA" "$REMOTE_REF" "$REMOTE_SHA"; then
+# The hook will run automatically, but we can also call it directly
+if "$PRE_COMMIT_HOOK"; then
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║           ✅ TEST PASSED - Hook Executed Successfully     ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}\n"
-    echo -e "${GREEN}The pre-push hook would allow this push.${NC}\n"
-    exit 0
+    echo -e "${GREEN}║     ✅ HOOK EXECUTED - Check output above for warnings    ║${NC}"
+    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝\n"
+    echo -e "${GREEN}The pre-commit hook executed. If you see warnings above, the hook is working!${NC}\n"
+    echo -e "${YELLOW}Note: Pre-commit hook shows warnings but does not block commits.${NC}\n"
 else
     EXIT_CODE=$?
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║           ❌ TEST FAILED - Hook Would Block Push          ║${NC}"
-    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}\n"
-    echo -e "${RED}The pre-push hook would block this push.${NC}"
-    echo -e "${RED}Exit code: $EXIT_CODE${NC}\n"
-    echo -e "${YELLOW}Fix the issues above before pushing.${NC}"
-    exit $EXIT_CODE
+    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║        ⚠️  HOOK EXECUTED WITH EXIT CODE $EXIT_CODE            ║${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝\n"
+    echo -e "${YELLOW}Check the output above for any errors or warnings.${NC}\n"
 fi
+
+# Cleanup
+echo -e "${BLUE}🧹 Cleaning up test file...${NC}"
+git reset HEAD "$TEST_FILE" 2>/dev/null || git reset HEAD "test_file.swift" 2>/dev/null || true
+rm -f "$TEST_FILE"
+echo -e "${GREEN}✓ Cleanup complete${NC}\n"
+
+exit 0
