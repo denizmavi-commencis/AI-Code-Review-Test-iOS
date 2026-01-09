@@ -854,54 +854,50 @@ if [ "$REVIEW_TOOL" = "cursor" ]; then
         fi
     fi
 elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
-    # Run CodeRabbit - try multiple command formats
-    # CodeRabbit CLI format may vary, so we try different approaches
+    # Run CodeRabbit - Use --plain flag and review the commits being pushed
+    # CodeRabbit works best when run in git repo context and can review commits
     REVIEW_EXIT_CODE=1
     
-    # Try format 1: coderabbit review with diff file (--file or --diff-file or --diff)
-    for file_flag in "--file" "--diff-file" "--diff" "-f" "-d"; do
-        if command -v gtimeout &> /dev/null; then
-            if gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review $file_flag "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1; then
-                REVIEW_EXIT_CODE=0
-                break
-            fi
+    # Try format 1: Run in git repo context with --plain and review the commit range
+    # CodeRabbit can review commits using --base-commit
+    if command -v gtimeout &> /dev/null; then
+        if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review --plain --base-commit "$REMOTE_SHA" > "$REVIEW_OUTPUT_FILE" 2>&1); then
+            REVIEW_EXIT_CODE=0
         else
-            "$REVIEW_TOOL_PATH" review $file_flag "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1 &
-            REVIEW_PID=$!
-            
-            for i in $(seq 1 $TIMEOUT_SECONDS); do
-                if ! kill -0 $REVIEW_PID 2>/dev/null; then
-                    set +e
-                    wait $REVIEW_PID
-                    REVIEW_EXIT_CODE=$?
-                    set -e
-                    break
-                fi
-                sleep 1
-            done
-            
-            if kill -0 $REVIEW_PID 2>/dev/null; then
-                kill $REVIEW_PID 2>/dev/null || true
+            REVIEW_EXIT_CODE=$?
+        fi
+    else
+        (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review --plain --base-commit "$REMOTE_SHA" > "$REVIEW_OUTPUT_FILE" 2>&1) &
+        REVIEW_PID=$!
+        
+        for i in $(seq 1 $TIMEOUT_SECONDS); do
+            if ! kill -0 $REVIEW_PID 2>/dev/null; then
                 set +e
-                wait $REVIEW_PID 2>/dev/null || true
+                wait $REVIEW_PID
+                REVIEW_EXIT_CODE=$?
                 set -e
-                REVIEW_EXIT_CODE=124
-            fi
-            
-            if [ $REVIEW_EXIT_CODE -eq 0 ]; then
                 break
             fi
+            sleep 1
+        done
+        
+        if kill -0 $REVIEW_PID 2>/dev/null; then
+            kill $REVIEW_PID 2>/dev/null || true
+            set +e
+            wait $REVIEW_PID 2>/dev/null || true
+            set -e
+            REVIEW_EXIT_CODE=124
         fi
-    done
+    fi
     
-    # Try format 2: coderabbit review with stdin (if format 1 failed)
+    # Try format 2: Run with --plain but without --base-commit (if format 1 failed)
     if [ $REVIEW_EXIT_CODE -ne 0 ] && [ $REVIEW_EXIT_CODE -ne 124 ]; then
         if command -v gtimeout &> /dev/null; then
-            if cat "$TEMP_DIFF_FILE" | gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1; then
+            if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review --plain > "$REVIEW_OUTPUT_FILE" 2>&1); then
                 REVIEW_EXIT_CODE=0
             fi
         else
-            cat "$TEMP_DIFF_FILE" | "$REVIEW_TOOL_PATH" review > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1 &
+            (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review --plain > "$REVIEW_OUTPUT_FILE" 2>&1) &
             REVIEW_PID=$!
             
             for i in $(seq 1 $TIMEOUT_SECONDS); do
@@ -924,41 +920,6 @@ elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
             fi
         fi
     fi
-    
-    # Try format 3: coderabbit review in git context (if previous formats failed)
-    # CodeRabbit might need to be run in the git repo directory
-    if [ $REVIEW_EXIT_CODE -ne 0 ] && [ $REVIEW_EXIT_CODE -ne 124 ]; then
-        if command -v gtimeout &> /dev/null; then
-            if (cd "$PROJECT_ROOT" && gtimeout ${TIMEOUT_SECONDS}s "$REVIEW_TOOL_PATH" review "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1); then
-                REVIEW_EXIT_CODE=0
-            fi
-        else
-            (cd "$PROJECT_ROOT" && "$REVIEW_TOOL_PATH" review "$TEMP_DIFF_FILE" > "$REVIEW_OUTPUT_FILE" 2> "$REVIEW_ERROR_FILE" 2>&1) &
-            REVIEW_PID=$!
-            
-            for i in $(seq 1 $TIMEOUT_SECONDS); do
-                if ! kill -0 $REVIEW_PID 2>/dev/null; then
-                    set +e
-                    wait $REVIEW_PID
-                    REVIEW_EXIT_CODE=$?
-                    set -e
-                    break
-                fi
-                sleep 1
-            done
-            
-            if kill -0 $REVIEW_PID 2>/dev/null; then
-                kill $REVIEW_PID 2>/dev/null || true
-                set +e
-                wait $REVIEW_PID 2>/dev/null || true
-                set -e
-                REVIEW_EXIT_CODE=124
-            fi
-        fi
-    fi
-    
-    # Note: CodeRabbit may have different output format than Cursor
-    # The JSON parsing will handle both formats, or we'll skip review if parsing fails
 fi
 
 # Clean up temp diff file
@@ -998,20 +959,93 @@ fi
 if [ -s "$REVIEW_OUTPUT_FILE" ]; then
     REVIEW_RESULT=$(cat "$REVIEW_OUTPUT_FILE")
     
-    # DEBUG: Show the raw tool output
-    TOOL_NAME="AI review tool"
-    if [ "$REVIEW_TOOL" = "cursor" ]; then
-        TOOL_NAME="Cursor Agent"
-    elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
-        TOOL_NAME="CodeRabbit"
-    fi
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}🤖 $TOOL_NAME Raw Response (DEBUG):${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo "$REVIEW_RESULT"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-    
-    # Extract JSON from the response
+    # For CodeRabbit, it outputs plain text (not JSON)
+    # Handle it separately from Cursor which outputs JSON
+    if [ "$REVIEW_TOOL" = "coderabbit" ]; then
+        # Trim whitespace and check if there's actual content
+        REVIEW_RESULT_TRIMMED=$(echo "$REVIEW_RESULT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        
+        if [ -n "$REVIEW_RESULT_TRIMMED" ]; then
+            # Filter out status messages to see if there's actual review content
+            REVIEW_CONTENT=$(echo "$REVIEW_RESULT" | grep -v -iE "^(Starting|Connecting|Setting up|Analyzing|Reviewing|Review completed)" | grep -v "^$" || echo "$REVIEW_RESULT")
+            
+            # Check for critical issues that should block the push
+            # Look for keywords indicating critical problems
+            HAS_CRITICAL_ISSUES=false
+            if echo "$REVIEW_RESULT" | grep -qiE "CRITICAL|critical.*issue|force.*unwrap|crash|security.*vulnerability|hardcoded.*secret|hardcoded.*key|hardcoded.*password|🔴|❌.*critical"; then
+                HAS_CRITICAL_ISSUES=true
+            fi
+            
+            # Check if there's actual review content beyond status messages
+            if [ -n "$(echo "$REVIEW_CONTENT" | tr -d '[:space:]')" ] && [ "$REVIEW_CONTENT" != "$REVIEW_RESULT" ]; then
+                # Has review content - show it
+                if [ "$HAS_CRITICAL_ISSUES" = true ]; then
+                    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+                    echo -e "${RED}║  ❌ CRITICAL ISSUES FOUND - PUSH BLOCKED                 ║${NC}"
+                    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}\n"
+                    echo -e "${RED}🚨 CodeRabbit Review Results:${NC}\n"
+                    echo "$REVIEW_CONTENT"
+                    echo ""
+                    echo -e "${RED}Please fix these critical issues before pushing.${NC}"
+                    echo -e "${YELLOW}To bypass this check (not recommended), use: git push --no-verify${NC}"
+                    rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+                    exit 1
+                else
+                    # Has content but no critical issues - show as warning but allow push
+                    echo -e "${YELLOW}⚠️  CodeRabbit Review Results:${NC}\n"
+                    echo "$REVIEW_CONTENT"
+                    echo ""
+                    echo -e "${GREEN}✓ No critical issues found - push will proceed${NC}\n"
+                fi
+            elif echo "$REVIEW_RESULT_TRIMMED" | grep -qiE "warning|error|issue|problem|suggestion|fix|critical|high|medium|🔴|🟠|🟡|⚠️|❌|recommend|consider|should|improve"; then
+                # Contains review keywords - check for critical issues
+                if [ "$HAS_CRITICAL_ISSUES" = true ]; then
+                    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+                    echo -e "${RED}║  ❌ CRITICAL ISSUES FOUND - PUSH BLOCKED                 ║${NC}"
+                    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}\n"
+                    echo -e "${RED}🚨 CodeRabbit Review Results:${NC}\n"
+                    echo "$REVIEW_RESULT"
+                    echo ""
+                    echo -e "${RED}Please fix these critical issues before pushing.${NC}"
+                    echo -e "${YELLOW}To bypass this check (not recommended), use: git push --no-verify${NC}"
+                    rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+                    exit 1
+                else
+                    # Has issues but not critical - show and allow push
+                    echo -e "${YELLOW}⚠️  CodeRabbit Review Results:${NC}\n"
+                    echo "$REVIEW_RESULT"
+                    echo ""
+                    echo -e "${GREEN}✓ No critical issues found - push will proceed${NC}\n"
+                fi
+            else
+                # No clear issues - show output anyway for transparency
+                echo -e "${BLUE}📋 CodeRabbit Review Output:${NC}\n"
+                echo "$REVIEW_RESULT"
+                echo ""
+                echo -e "${GREEN}✓ CodeRabbit review completed - no issues detected${NC}\n"
+            fi
+            rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+        else
+            # Empty output
+            echo -e "${GREEN}✓ CodeRabbit review completed - no output received${NC}\n"
+            rm -f "$REVIEW_OUTPUT_FILE" "$REVIEW_ERROR_FILE"
+        fi
+    else
+        # Handle Cursor Agent JSON output (existing logic)
+        # DEBUG: Show the raw tool output
+        TOOL_NAME="AI review tool"
+        if [ "$REVIEW_TOOL" = "cursor" ]; then
+            TOOL_NAME="Cursor Agent"
+        elif [ "$REVIEW_TOOL" = "coderabbit" ]; then
+            TOOL_NAME="CodeRabbit"
+        fi
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BLUE}🤖 $TOOL_NAME Raw Response (DEBUG):${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo "$REVIEW_RESULT"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+        
+        # Extract JSON from the response (only for Cursor)
     # The response is wrapped in a result object, and the actual JSON is in a code block
     # Pass file path via environment variable
     JSON_RESULT=$(REVIEW_OUTPUT_FILE="$REVIEW_OUTPUT_FILE" python3 << 'PYTHON_EOF'
@@ -1290,6 +1324,7 @@ print(f\"Summary: {data.get('summary', 'Issues found in your changes')}\")"
             SUMMARY=$(echo "$JSON_RESULT" | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('summary', 'No issues found'))" 2>/dev/null || echo "Review completed")
             echo -e "${GREEN}  Summary: $SUMMARY${NC}\n"
         fi
+    fi
     fi
 else
     TOOL_NAME="AI review tool"
